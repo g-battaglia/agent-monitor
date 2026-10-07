@@ -96,7 +96,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Panel::Sessions => "Search sessions",
         Panel::Detail => "Search the page text",
     };
-    let query = if app.search_text().is_empty() {
+    // Hint text only when idle: the moment editing starts the field clears,
+    // so the cursor never sits inside the placeholder (see screenshot).
+    let query = if app.search_text().is_empty() && !app.editing_search {
         format!(
             "{}  / or Ctrl-f",
             match app.panel {
@@ -756,6 +758,20 @@ mod tests {
         assert!(text.contains("Acme Website"));
         assert!(text.contains("Search projects"));
         assert!(app.visible.is_empty());
+        // Entering search clears the placeholder before the first keystroke,
+        // so the cursor never renders inside the hint text.
+        app.editing_search = true;
+        let mut editing = Terminal::new(ratatui::backend::TestBackend::new(120, 32)).unwrap();
+        editing.draw(|f| draw(f, &app)).unwrap();
+        let editing_text = editing
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(!editing_text.contains("Name or folder"));
+        assert!(editing_text.contains("Search projects"));
     }
     #[test]
     fn no_color_still_has_visible_selection() {

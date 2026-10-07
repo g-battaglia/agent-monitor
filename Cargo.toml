@@ -2,7 +2,10 @@
 name = "agent-monitor"
 version = "0.1.0"
 edition = "2024"
-description = "A local terminal explorer for Pi sessions"
+description = "A terminal session explorer for coding agents"
+repository = "https://github.com/g-battaglia/agent-monitor"
+keywords = ["tui", "agent", "sessions", "tmux", "explorer"]
+readme = "README.md"
 license = "MIT"
 
 [dependencies]

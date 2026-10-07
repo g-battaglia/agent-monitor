@@ -1,60 +1,92 @@
 # agent-monitor
 
-**Never lose a Pi conversation again.**
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-34%20passing-green.svg)](#checks)
 
-A lazygit-style terminal explorer for your Pi sessions: projects on the
-left, conversations in the middle, full preview on the right. No task
-boards, no tickets, no setup ritual. Open it, find the conversation,
-pick up exactly where you left off.
+A terminal session explorer for coding agents. Browse past conversations
+by project, preview the full exchange, and resume exactly where work
+stopped — from the TUI or from scripts.
+
+![agent-monitor terminal interface](assets/screenshot.png)
 
 ```sh
 cargo build --release --locked
 ./target/release/agent-monitor
 ```
 
-## Why you'll like it
+## Overview
 
-- **Zero setup.** Projects, names, and history are discovered from your
-  Pi files automatically. No extension required.
-- **Real names, real context.** `Acme Website / website-redesign` — the
-  project and the conversation, side by side, never a bare cryptic id.
-- **Resume in one keystroke.** `Enter` jumps to the live pane, or reopens
-  the *same* conversation in a fresh tmux window when the old pane is gone.
-- **Your decisions stick.** `To resume` and `Done` are yours alone. Idle
-  panes, closed terminals, and slow imports never flip them.
-- **Honest presence.** Verified openings (`●`), probable hints (`≈`),
-  and unverified runs are shown for what they are — never guessed.
-- **Keyboard-first, mouse-friendly.** Arrows, `/` search, `?` menu, plus
-  click and scroll where you'd expect them.
+`agent-monitor` indexes locally stored agent sessions (Pi JSONL v3) into a
+private SQLite catalog and presents them in a three-panel terminal UI:
+projects, sessions, and conversation preview. It also detects live agent
+processes in tmux, so `Enter` either jumps to the running pane or reopens
+the same transcript in a fresh window.
 
-## 30-second tour
+Supported agents are recognized by process: Pi (primary, with transcript
+indexing and an optional presence extension), Claude, Codex, and Opencode
+(presence only).
 
-It opens in **All**: every project and conversation Pi ever saved, with an
-always-visible search bar on top (`/`, `Ctrl-f`, or click). Search matches
-names, folders, and your own notes. Picking a filtered project with `Enter`
-dives straight in.
+## Features
 
-Sessions marked **`[R]`** want your attention — that's the to-resume list
-(`f` switches views: All, To resume, Open, Done). `●` means a verified
-open pane, `≈` a probable one; both are about *where Pi runs*, while `[R]`
-is about *what you want to finish*.
+- **Automatic discovery.** Projects, names, and history are derived from
+  stored session files. No manual registration and no extension required.
+- **Resume-oriented workflow.** Sessions carry an explicit state — history,
+  to-resume, or done — plus a short next-step note. States are user
+  decisions; activity or idleness never changes them implicitly.
+- **Live pane awareness.** Verified extension records (`●`) and passive
+  title/folder hints (`≈`) distinguish proven openings from guesses.
+  Duplicate names are never associated arbitrarily.
+- **Safe resume.** Reopening a closed session uses exact argv
+  (`<agent> --session <file>`) in the project directory, preferring a new
+  tmux window, otherwise a new detached session. Verified or probable
+  openings block accidental duplicates.
+- **Readable previews.** Paginated newest-first pages, branch selection,
+  optional tool output. Reasoning traces and images stay hidden.
+- **Search everywhere.** The top bar filters the active panel: projects,
+  session names/notes, or the current conversation text.
+- **Scriptable.** The full workflow (list, show, resume, annotate, undo,
+  sync) is available as CLI commands with JSON output.
 
-`Enter` on a session does the obvious thing: go to its pane, pick between
-openings, or — when nothing is open — ask to reopen that exact JSONL with
-`pi --session` in a new tmux window. Existing panes are never touched.
+## Quick start
 
-`?` opens a contextual action menu: one readable row per action, shortcut
-aligned right, plain explanation below. Arrows + `Enter`, or click.
+Build and launch the explorer:
 
-## Keys
+```sh
+cargo build --release --locked
+./target/release/agent-monitor
+```
 
-| Key | Does |
+It opens on **All** sessions. Type `/` to search, `Enter` to open a
+project or jump to a session, `f` to switch views (All, To resume, Open,
+Done), `?` for the contextual action menu.
+
+Jump directly to one project:
+
+```sh
+./target/release/agent-monitor pick --project acme-website
+```
+
+## Screenshot
+
+The image above is generated from synthetic data by
+`scripts/screenshot.py` (via `cargo run --example layout`), so no real
+session content ever appears in the repository. Regenerate it with:
+
+```sh
+python3 scripts/screenshot.py
+```
+
+## Key bindings
+
+| Key | Action |
 |---|---|
 | `j/k`, arrows | Move or scroll |
 | `h/l`, `Tab` | Switch panel |
 | `Enter` | Open the pane, or offer to resume |
 | `f` / `p` | Change view / pick project |
-| `r` / `d` | To resume / done |
+| `r` / `d` | Mark to resume / done |
 | `n` / `u` | Next-step note / undo |
 | `/`, `Ctrl-f`, click the bar | Search projects, names, notes, or text |
 | `z` | Expand the conversation |
@@ -64,24 +96,7 @@ aligned right, plain explanation below. Arrows + `Enter`, or click.
 | `gg`, `G`, `Ctrl-d/u` | Jump to ends, half pages |
 | `Esc`, `?`, `q` | Back, actions, quit (monitor only) |
 
-Notes save when you see **Saved**. Quitting (`q`) only ever quits the
-monitor — never Pi, never tmux.
-
-## Optional: exact presence
-
-Without anything installed, open panes are matched by exact title + folder
-and shown as probable (`≈`). Duplicate names are never guessed. For proven
-identity (`●`) — even across `/resume` — install the tiny local extension:
-
-```sh
-./target/release/agent-monitor integration pi install
-```
-
-Then run `/reload` in every Pi that's already open. New Pi runs pick it up
-automatically. The monitor never sends `/reload`, prompts, or permission
-answers on your behalf.
-
-## Scripting
+## CLI reference
 
 ```sh
 agent-monitor sessions --all --project acme-website
@@ -91,34 +106,51 @@ agent-monitor done <id>
 agent-monitor reopen <id>
 agent-monitor note <id> 'Check the timeout'
 agent-monitor undo <id>
+agent-monitor open <id> [--resume]
 agent-monitor sync
 agent-monitor sources list
 agent-monitor sources add /path/to/sessions
 agent-monitor integration pi status
 ```
 
-`<id>` is the Pi id or the catalog id from `--json`; ambiguous ids are
-rejected. `open <id>` jumps to a verified opening. Resuming a closed Pi
-asks first (or pass `--resume` in scripts) and rechecks identity, folder,
-and presence immediately before launch.
+`<id>` accepts the agent session id or the catalog id shown by
+`sessions --json`; ambiguous ids are rejected. `open` jumps to a verified
+opening when one exists; otherwise it asks for confirmation (or `--resume`
+in scripts) and revalidates identity, folder, and presence before launch.
 
-## How it works, briefly
+## Optional presence extension
 
-- Rust + SQLite + Ratatui, macOS and Linux. Reads Pi JSONL **v3**
-  read-only — transcripts stay the source of truth.
-- Private state in `~/.local/state/agent-monitor/sessions.db` (dir 0700,
-  db 0600). Override with `AGENT_MONITOR_HOME` or `--data-dir`.
-- First import stays history; verified opens and genuinely new sessions
-  join To resume. `Done` survives reimports, restarts, and undo history.
-- Paginated previews (100 per page), branch picker, optional tool output.
-  Thinking blocks and images are always hidden. Oversized files are
-  reported, not swallowed.
-- Resume uses exact argv (`pi --session <file>`, in the project folder),
-  preferring a new window in the project's tmux session, else a fresh
-  detached session. No shell interpolation, no closed panes, no config edits.
-- No network, no telemetry, no credentials read.
+Pane matching works without installation (exact title + folder ⇒ probable
+`≈`). For proven identity (`●`), including across in-process session
+switches, install the bundled Pi extension:
 
-## Checks
+```sh
+./target/release/agent-monitor integration pi install
+```
+
+Then run `/reload` in each already-open Pi session; new sessions load it
+automatically. The monitor never sends input to agent sessions on your
+behalf.
+
+## Data and privacy
+
+- Transcripts are read-only; the JSONL files remain the source of truth.
+- State lives in `~/.local/state/agent-monitor/sessions.db` (directory
+  0700, database 0600). Override with `AGENT_MONITOR_HOME` or `--data-dir`.
+- No network access, no telemetry, no credentials read.
+- Display strings are sanitized (ANSI/control/bidi sequences stripped).
+
+## Limits
+
+- Transcript format: Pi JSONL v3. Older formats are reported, not migrated.
+- Caps: 512 MiB files, 8 MiB lines, 100k preview entries. Oversized
+  content is reported, not loaded.
+- Unsaved sessions (`--no-session`, or before the first message) appear
+  only while running and cannot be resumed from the catalog.
+- Custom session directories are discovered via standard locations and
+  `.pi/settings.json`; undeclared paths can be added with `sources add`.
+
+## Development
 
 ```sh
 cargo fmt --check
@@ -132,7 +164,9 @@ python3 scripts/latency.py                 # after the release build
 cargo run --example layout                # synthetic preview
 ```
 
-Tests use temp dirs and fake `pi`/`tmux` executables — no real provider
-ever starts. Load numbers are local measurements, not promises.
+Tests use temporary directories and stub executables; no real agent
+process is ever started. Performance figures are local measurements.
 
-MIT licensed.
+## License
+
+MIT. See [LICENSE](LICENSE).

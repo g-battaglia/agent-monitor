@@ -1,0 +1,32 @@
+╭ Search sessions ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Name, project, or note…  / or Ctrl-f                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Projects ────────────────────────────────────╮╭ Acme Website / website-redesign ─────────────────────────────────────╮
+│› All projects  5                             ││To resume    Presence unverified                                      │
+│  Acme Website  5                             ││Acme Website                                                          │
+│                                              ││Last exchange: —                                                      │
+│                                              ││                                                                      │
+│                                              ││Next step                                                             │
+╰──────────────────────────────────────────────╯│Check the hero spacing in a real browser.                             │
+╭ All · 5 ─────────────────────────────────────╮│                                                                      │
+│›   [R] Acme Website / website-redesign       ││Latest saved branch                                                   │
+│    [R] Acme Website / api-migration          ││                                                                      │
+│    [R] Acme Website / onboarding-flow        ││You  —                                                                │
+│    [R] Acme Website / perf-audit             ││Check the new landing copy.                                           │
+│    [R] Acme Website / release-notes          ││                                                                      │
+│                                              ││Pi  —                                                                 │
+│                                              ││The draft is ready for review.                                        │
+│                                              ││Mobile spacing still needs checking.                                  │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
+r to resume   d done   Enter open   f view   / search   ? actions                                                       
+                                                                                                                        

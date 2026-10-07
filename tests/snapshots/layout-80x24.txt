@@ -1,0 +1,24 @@
+╭ Search sessions ─────────────────────────────────────────────────────────────╮
+│Name, project, or note…  / or Ctrl-f                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ All · 5 ─────────────────────╮╭ Acme Website / website-redesign ─────────────╮
+│›   [R] Acme Website / website││To resume    Presence unverified              │
+│    [R] Acme Website / api-mig││Acme Website                                  │
+│    [R] Acme Website / onboard││Last exchange: —                              │
+│    [R] Acme Website / perf-au││                                              │
+│    [R] Acme Website / release││Next step                                     │
+│                              ││Check the hero spacing in a real browser.     │
+│                              ││                                              │
+│                              ││Latest saved branch                           │
+│                              ││                                              │
+│                              ││You  —                                        │
+│                              ││Check the new landing copy.                   │
+│                              ││                                              │
+│                              ││Pi  —                                         │
+│                              ││The draft is ready for review.                │
+│                              ││Mobile spacing still needs checking.          │
+│                              ││                                              │
+│                              ││                                              │
+╰──────────────────────────────╯╰──────────────────────────────────────────────╯
+r to resume   d done   Enter open   f view   / search   ? actions               
+                                                                                

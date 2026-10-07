@@ -1,0 +1,32 @@
+╭ Search sessions ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Name, project, or note…  / or Ctrl-f                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Projects ────────────────────────────────────╮╭ Acme Website / website-redesign ─────────────────────────────────────╮
+│› All projects  5      ╭ Session commands ────────────────────────────────────────────────────╮                       │
+│  Acme Website  5      │ Acme Website / website-redesign                                      │                       │
+│                       │                                                                      │                       │
+│                       │  Trova                                                               │                       │
+│                       │  Search sessions                                           /         │                       │
+╰───────────────────────│  Session                                                             │                       │
+╭ All · 5 ──────────────│  Go to Pi or resume the work                               Enter     │                       │
+│›   [R] Acme Website / │  Edit the next step                                        n         │                       │
+│    [R] Acme Website / │  Mark as done                                              d         │                       │
+│    [R] Acme Website / │  Mark to resume                                            r         │                       │
+│    [R] Acme Website / │  Undo the last change                                      u         │                       │
+│    [R] Acme Website / │  Show file info                                            i         │                       │
+│                       │  Navigate                                                            │                       │
+│                       │  Change view                                               f         │                       │
+│                       │  Pick another project                                      p         │                       │
+│                       │  Browse open Pi runs                                       o         │                       │
+│                       │  Move to the next panel                                    Tab       │                       │
+│                       │  Catalog                                                             │                       │
+│                       │› Refresh the catalog                                       R         │                       │
+│                       │ Re-read names, conversations, and openings without starting agents.  │                       │
+│                       │                                                                      │                       │
+│                       │ ↑↓ choose   Enter run   Esc close                                    │                       │
+│                       ╰──────────────────────────────────────────────────────────────────────╯                       │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
+r to resume   d done   Enter open   f view   / search   ? actions                                                       
+                                                                                                                        

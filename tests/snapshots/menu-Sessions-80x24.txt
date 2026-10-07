@@ -1,0 +1,24 @@
+╭ Search sessions ─────────────────────────────────────────────────────────────╮
+│Nam╭ Session commands ────────────────────────────────────────────────────╮   │
+╰───│ Acme Website / website-redesign                                      │───╯
+╭ Al│                                                                      │───╮
+│›  │  Search sessions                                           /         │   │
+│   │  Session                                                             │   │
+│   │  Go to Pi or resume the work                               Enter     │   │
+│   │  Edit the next step                                        n         │   │
+│   │  Mark as done                                              d         │   │
+│   │  Mark to resume                                            r         │   │
+│   │  Undo the last change                                      u         │   │
+│   │  Show file info                                            i         │   │
+│   │  Navigate                                                            │   │
+│   │  Change view                                               f         │   │
+│   │  Pick another project                                      p         │   │
+│   │  Browse open Pi runs                                       o         │   │
+│   │  Move to the next panel                                    Tab       │   │
+│   │  Catalog                                                             │   │
+│   │› Refresh the catalog                                       R         │   │
+│   │ Re-read names, conversations, and openings without starting agents.  │   │
+│   │                                                                      │   │
+╰───│ ↑↓ choose   Enter run   Esc close                                    │───╯
+r to╰──────────────────────────────────────────────────────────────────────╯    
+                                                                                

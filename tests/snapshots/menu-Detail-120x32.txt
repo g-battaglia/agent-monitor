@@ -1,0 +1,32 @@
+╭ Search the page text ────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Text to find…  / or Ctr╭ Conversation commands ───────────────────────────────────────────────╮                       │
+╰───────────────────────│ Acme Website / website-redesign                                      │───────────────────────╯
+╭ Projects ─────────────│                                                                      │───────────────────────╮
+│› All projects  5      │  Trova                                                               │                       │
+│  Acme Website  5      │  Search the text                                           /         │                       │
+│                       │  Session                                                             │                       │
+│                       │  Go to Pi or resume the work                               Enter     │                       │
+│                       │  Edit the next step                                        n         │                       │
+╰───────────────────────│  Mark as done                                              d         │                       │
+╭ All · 5 ──────────────│  Mark to resume                                            r         │                       │
+│›   [R] Acme Website / │  Undo the last change                                      u         │                       │
+│    [R] Acme Website / │  Show file info                                            i         │                       │
+│    [R] Acme Website / │  Reading                                                             │                       │
+│    [R] Acme Website / │  Expand the conversation                                   z         │                       │
+│    [R] Acme Website / │  Choose a conversation branch                              b         │                       │
+│                       │  Show or hide tools                                        t         │                       │
+│                       │  Read the older page                                       [         │                       │
+│                       │  Read the newer page                                       ]         │                       │
+│                       │  Navigate                                                            │                       │
+│                       │  Change view                                               f         │                       │
+│                       │  Pick another project                                      p         │                       │
+│                       │  Browse open Pi runs                                       o         │                       │
+│                       │  Move to the next panel                                    Tab       │                       │
+│                       │  Catalog                                                             │                       │
+│                       │› Refresh the catalog                                       R         │                       │
+│                       │ Re-read names, conversations, and openings without starting agents.  │                       │
+│                       │                                                                      │                       │
+│                       │ ↑↓ choose   Enter run   Esc close                                    │                       │
+╰───────────────────────╰──────────────────────────────────────────────────────────────────────╯───────────────────────╯
+r to resume   j/k scroll   [ ] pages   / search   z expand   ? actions                                                  
+                                                                                                                        

@@ -1,0 +1,12 @@
+╭ Search projects ─────────────────────╮
+│N╭ Project commands ────────────────╮ │
+╰─│ All projects                     │─╯
+╭ │                                  │─╮
+│›│  Move to the next panelTab       │ │
+│ │  Catalog                         │ │
+│ │› Refresh the catalog   R         │ │
+│ │ Re-read names, conversations,    │ │
+│ │ and openings without starting    │ │
+╰─│ ↑↓ choose   Enter run   Esc clos │─╯
+En╰──────────────────────────────────╯se
+                                        

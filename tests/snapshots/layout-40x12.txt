@@ -1,0 +1,12 @@
+╭ Search sessions ─────────────────────╮
+│Name, project, or note…  / or Ctrl-f  │
+╰──────────────────────────────────────╯
+╭ All · 5 ─────────────────────────────╮
+│›   [R] Acme Website / website-redesig│
+│    [R] Acme Website / api-migration  │
+│    [R] Acme Website / onboarding-flow│
+│    [R] Acme Website / perf-audit     │
+│    [R] Acme Website / release-notes  │
+╰──────────────────────────────────────╯
+r to resume  Enter open  ? actions      
+                                        

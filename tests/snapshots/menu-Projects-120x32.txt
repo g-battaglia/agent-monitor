@@ -1,0 +1,32 @@
+╭ Search projects ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Name or folder…  / or Ctrl-f                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Projects ────────────────────────────────────╮╭ Acme Website / website-redesign ─────────────────────────────────────╮
+│› All projects  5                             ││To resume    Presence unverified                                      │
+│  Acme Website  5                             ││Acme Website                                                          │
+│                                              ││Last exchange: —                                                      │
+│                       ╭ Project commands ────────────────────────────────────────────────────╮                       │
+│                       │ All projects                                                         │                       │
+╰───────────────────────│                                                                      │                       │
+╭ All · 5 ──────────────│  Trova                                                               │                       │
+│›   [R] Acme Website / │  Search projects                                           /         │                       │
+│    [R] Acme Website / │  Project                                                             │                       │
+│    [R] Acme Website / │  Open the selected project                                 Enter     │                       │
+│    [R] Acme Website / │  Navigate                                                            │                       │
+│    [R] Acme Website / │  Change view                                               f         │                       │
+│                       │  Pick another project                                      p         │                       │
+│                       │  Browse open Pi runs                                       o         │                       │
+│                       │  Move to the next panel                                    Tab       │                       │
+│                       │  Catalog                                                             │                       │
+│                       │› Refresh the catalog                                       R         │                       │
+│                       │ Re-read names, conversations, and openings without starting agents.  │                       │
+│                       │                                                                      │                       │
+│                       │ ↑↓ choose   Enter run   Esc close                                    │                       │
+│                       ╰──────────────────────────────────────────────────────────────────────╯                       │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
+Enter pick project   Tab sessions   / search   ? actions                                                                
+                                                                                                                        

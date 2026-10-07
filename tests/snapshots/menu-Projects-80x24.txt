@@ -1,0 +1,24 @@
+╭ Search projects ─────────────────────────────────────────────────────────────╮
+│Name or folder…  / or Ctrl-f                                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ Pr╭ Project commands ────────────────────────────────────────────────────╮───╮
+│› A│ All projects                                                         │   │
+│  A│                                                                      │   │
+│   │  Trova                                                               │   │
+│   │  Search projects                                           /         │   │
+│   │  Project                                                             │   │
+│   │  Open the selected project                                 Enter     │   │
+│   │  Navigate                                                            │   │
+│   │  Change view                                               f         │   │
+│   │  Pick another project                                      p         │   │
+│   │  Browse open Pi runs                                       o         │   │
+│   │  Move to the next panel                                    Tab       │   │
+│   │  Catalog                                                             │   │
+│   │› Refresh the catalog                                       R         │   │
+│   │ Re-read names, conversations, and openings without starting agents.  │   │
+│   │                                                                      │   │
+│   │ ↑↓ choose   Enter run   Esc close                                    │   │
+│   ╰──────────────────────────────────────────────────────────────────────╯   │
+╰──────────────────────────────╯╰──────────────────────────────────────────────╯
+Enter pick project   Tab sessions   / search   ? actions                        
+                                                                                

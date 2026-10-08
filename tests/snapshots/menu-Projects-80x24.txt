@@ -4,14 +4,14 @@
 ╭ Pr╭ Project commands ────────────────────────────────────────────────────╮───╮
 │› A│ All projects                                                         │   │
 │  A│                                                                      │   │
-│   │  Trova                                                               │   │
+│   │  Find                                                                │   │
 │   │  Search projects                                           /         │   │
 │   │  Project                                                             │   │
 │   │  Open the selected project                                 Enter     │   │
 │   │  Navigate                                                            │   │
 │   │  Change view                                               f         │   │
 │   │  Pick another project                                      p         │   │
-│   │  Browse open Pi runs                                       o         │   │
+│   │  Browse open agent runs                                    o         │   │
 │   │  Move to the next panel                                    Tab       │   │
 │   │  Catalog                                                             │   │
 │   │› Refresh the catalog                                       R         │   │

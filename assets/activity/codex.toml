@@ -1,0 +1,15 @@
+# Bundled screen-detection manifest for Codex (v1).
+#
+# Ordered rules, first match wins. `blocked` is deliberately strict:
+# only known approval/question markers count. See src/activity.rs.
+manifest_version = 1
+
+[[rule]]
+id = "approval-prompt"
+state = "blocked"
+screen_any = ["Approve", "Allow", "accept?", "(y/n)", "[y/n]", "Yes, proceed", "Proceed?"]
+
+[[rule]]
+id = "spinner"
+state = "working"
+screen_any = ["Working", "Thinking", "Esc to interrupt", "esc to interrupt", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]

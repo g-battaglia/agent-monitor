@@ -13,7 +13,7 @@
 │   │  Navigate                                                            │   │
 │   │  Change view                                               f         │   │
 │   │  Pick another project                                      p         │   │
-│   │  Browse open Pi runs                                       o         │   │
+│   │  Browse open agent runs                                    o         │   │
 │   │  Move to the next panel                                    Tab       │   │
 │   │  Catalog                                                             │   │
 │   │› Refresh the catalog                                       R         │   │

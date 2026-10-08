@@ -1,0 +1,9 @@
+# Bundled screen-detection manifest for Opencode (v1).
+# Minimal on purpose: unknown shapes default to Unknown rather than a
+# wrong guess. Calibrate against real output before adding rules.
+manifest_version = 1
+
+[[rule]]
+id = "permission-prompt"
+state = "blocked"
+screen_any = ["Approve", "Allow", "accept?", "(y/n)", "[y/n]"]

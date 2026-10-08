@@ -319,7 +319,7 @@ fn projects(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
         let total = if count > 0 {
             count.to_string()
         } else if app.catalog.unbound.iter().any(|p| p.cwd == *cwd) {
-            "Open Pi".into()
+            "Open agent".into()
         } else if app.catalog.scanning {
             "…".into()
         } else {
@@ -341,7 +341,11 @@ fn projects(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     frame.render_stateful_widget(
         List::new(items)
             .block(theme.block(
-                "Projects".into(),
+                if app.view == crate::model::View::All {
+                    "Projects".into()
+                } else {
+                    format!("Projects · {} filter · f", app.view.label())
+                },
                 app.panel == Panel::Projects && !app.editing_search,
             ))
             .highlight_style(theme.selection)
@@ -354,14 +358,25 @@ fn projects(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
 
 fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     let rows = app.rows();
+    let total = app
+        .catalog
+        .sessions
+        .iter()
+        .filter(|s| app.project.as_ref().is_none_or(|p| *p == s.metadata.cwd))
+        .count();
     let title = format!(
-        "{}{} · {}",
+        "{}{} · {}{}",
         app.project
             .as_ref()
             .map(|cwd| format!("{} / ", project_label(cwd)))
             .unwrap_or_default(),
         app.view.label(),
-        rows.len()
+        rows.len(),
+        if rows.len() < total {
+            format!("/{total} · f views")
+        } else {
+            String::new()
+        }
     );
     let block = theme.block(title, app.panel == Panel::Sessions && !app.editing_search);
     let inner = block.inner(area);
@@ -402,7 +417,24 @@ fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
                 ListItem::new(Line::from(vec![
                     Span::raw(mark),
                     Span::styled(resume, Style::new().fg(theme.focus).bold()),
-                    Span::raw(paths::line(&label)),
+                    Span::raw(
+                        if s.metadata.provider == crate::model::Provider::Pi
+                            && !s.id.starts_with("pane-")
+                        {
+                            paths::line(&label)
+                        } else {
+                            format!(
+                                "[{}] {}{}",
+                                s.metadata.provider.label(),
+                                if s.id.starts_with("pane-") {
+                                    "live terminal · "
+                                } else {
+                                    ""
+                                },
+                                paths::line(&label)
+                            )
+                        },
+                    ),
                 ]))
             })
             .collect::<Vec<_>>();
@@ -449,14 +481,11 @@ fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
         };
         let height = room.min(unbound.len() as u16 + 2);
         if height >= 3 {
-            // Leftover space doubles as the unbound-pane strip: live Pi runs
-            // with no conversation identity. `o` opens the pane picker.
-            let text = std::iter::once("More open Pi runs — o browses panes".to_string())
-                .chain(
-                    unbound
-                        .iter()
-                        .map(|p| format!("  {}", paths::line(&p.title))),
-                )
+            // Leftover space doubles as the unbound-agent strip: live agent
+            // panes with no conversation identity. `o` opens the picker.
+            // Agent prefix + activity word, e.g. `codex · working`.
+            let text = std::iter::once("More open agent runs — o browses panes".to_string())
+                .chain(unbound.iter().map(|p| format!("  {}", unbound_label(p))))
                 .collect::<Vec<_>>()
                 .join("\n");
             frame.render_widget(
@@ -467,9 +496,20 @@ fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     }
 }
 
+/// One-line label for an unbound agent pane: agent, title, activity.
+/// Activity words are lowercase Herdr-style guesses, never facts.
+pub fn unbound_label(pane: &crate::tmux::PaneIdentity) -> String {
+    let agent = pane.provider.map(|p| p.label()).unwrap_or("agent");
+    let activity = pane
+        .activity
+        .map(|a| format!(" · {}", a.label()))
+        .unwrap_or_default();
+    format!("{agent} · {}{activity}", paths::line(&pane.title))
+}
+
 fn detail(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     let Some(session) = app.current() else {
-        let text = "Pick a session\n\nEvery Pi conversation keeps its name,\nhistory, and your note.\n\nf → All explores every saved session.\n\nHistory and names are discovered automatically.\nOpenings without the extension show as probable.\n\nNo agent ever starts on its own.";
+        let text = "Pick a session\n\nEvery conversation keeps its name,\nhistory, and your note.\n\nf → All explores every saved session.\n\nHistory and names are discovered automatically.\nOpenings without the extension show as probable.\n\nNo agent ever starts on its own.";
         frame.render_widget(
             Paragraph::new(text)
                 .wrap(Wrap { trim: false })
@@ -511,9 +551,25 @@ fn detail(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
             Style::new().fg(theme.warning),
         ));
         lines.push(Line::styled(
-            "Preview from the saved file, not the live Pi process.",
+            if session.id.starts_with("pane-") {
+                "Live terminal; no transcript association is assumed."
+            } else {
+                "Preview from the saved file, not the live agent process."
+            },
             Style::new().fg(theme.muted),
         ));
+        // Screen activity for probable panes, with provenance: a guess
+        // from terminal text, never a verified opening.
+        for pane in &session.probable {
+            if let (Some(provider), Some(state)) = (pane.provider, pane.activity)
+                && let Some(evidence) = &pane.activity_evidence
+            {
+                lines.push(Line::styled(
+                    crate::activity::describe(provider, state, evidence),
+                    Style::new().fg(theme.muted),
+                ));
+            }
+        }
     }
     for binding in &session.bindings {
         if let Some(pane) = &binding.pane {
@@ -532,7 +588,11 @@ fn detail(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     }
     if !session.available {
         lines.push(Line::styled(
-            "Conversation unavailable",
+            if session.id.starts_with("pane-") {
+                "Live pane · Enter focuses · session identity unverified"
+            } else {
+                "Conversation unavailable"
+            },
             Style::new().fg(theme.warning),
         ));
     }
@@ -685,6 +745,38 @@ mod tests {
         app
     }
     #[test]
+    fn unbound_labels_show_agent_and_activity_word() {
+        use crate::activity::AgentActivity;
+        use crate::tmux::PaneIdentity;
+        let pane = |provider: Option<Provider>, activity: Option<AgentActivity>| PaneIdentity {
+            socket: "/s".into(),
+            server: "1".into(),
+            pane: "%1".into(),
+            pane_pid: 1,
+            pane_start: "start".into(),
+            client_pid: 2,
+            client_start: "start".into(),
+            target: "t:1.0".into(),
+            session: "t".into(),
+            window: "1".into(),
+            cwd: "/repo".into(),
+            command: "codex".into(),
+            title: "api work".into(),
+            provider,
+            activity,
+            activity_evidence: None,
+        };
+        assert_eq!(
+            unbound_label(&pane(Some(Provider::Codex), Some(AgentActivity::Working))),
+            "codex · api work · working"
+        );
+        assert_eq!(
+            unbound_label(&pane(Some(Provider::Codex), None)),
+            "codex · api work"
+        );
+        assert_eq!(unbound_label(&pane(None, None)), "agent · api work");
+    }
+    #[test]
     fn open_and_probable_badges_use_brackets_like_resume() {
         use crate::model::{ResumeState, View};
         let mut app = fixture();
@@ -729,6 +821,8 @@ mod tests {
             command: "pi".into(),
             title: "hint".into(),
             provider: Some(Provider::Pi),
+            activity: None,
+            activity_evidence: None,
         }];
         app.no_color = true;
         app.refresh_filter();
@@ -810,6 +904,34 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(text.contains("r to resume"));
+    }
+    #[test]
+    fn claude_codex_and_opencode_are_visible_in_the_main_session_list() {
+        let mut app = fixture();
+        app.catalog.sessions.truncate(1);
+        for provider in [Provider::Claude, Provider::Codex, Provider::Opencode] {
+            let mut row = app.catalog.sessions[0].clone();
+            row.id = format!("pane-{}", provider.label());
+            row.metadata.provider = provider;
+            row.metadata.name = provider.label().into();
+            row.available = false;
+            app.catalog.sessions.push(row);
+        }
+        app.refresh_filter();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        for provider in ["claude", "codex", "opencode"] {
+            assert!(text.contains(&format!("[{provider}]")));
+        }
+        assert!(text.contains("live terminal"));
+        assert!(text.contains("All · 4"));
     }
     #[test]
     fn project_counts_include_history_even_in_resume_view() {

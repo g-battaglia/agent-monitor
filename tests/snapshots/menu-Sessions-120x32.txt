@@ -5,10 +5,10 @@
 │› All projects  5      ╭ Session commands ────────────────────────────────────────────────────╮                       │
 │  Acme Website  5      │ Acme Website / website-redesign                                      │                       │
 │                       │                                                                      │                       │
-│                       │  Trova                                                               │                       │
+│                       │  Find                                                                │                       │
 │                       │  Search sessions                                           /         │                       │
 ╰───────────────────────│  Session                                                             │                       │
-╭ All · 5 ──────────────│  Go to Pi or resume the work                               Enter     │                       │
+╭ All · 5 ──────────────│  Open the agent or resume the work                         Enter     │                       │
 │›     [R] Acme Website │  Edit the next step                                        n         │                       │
 │      [R] Acme Website │  Mark as done                                              d         │                       │
 │      [R] Acme Website │  Mark to resume                                            r         │                       │
@@ -17,7 +17,7 @@
 │                       │  Navigate                                                            │                       │
 │                       │  Change view                                               f         │                       │
 │                       │  Pick another project                                      p         │                       │
-│                       │  Browse open Pi runs                                       o         │                       │
+│                       │  Browse open agent runs                                    o         │                       │
 │                       │  Move to the next panel                                    Tab       │                       │
 │                       │  Catalog                                                             │                       │
 │                       │› Refresh the catalog                                       R         │                       │

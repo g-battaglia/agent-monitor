@@ -9,13 +9,38 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Which agent owns a terminal process, guessed from the executable name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
+    #[default]
     Pi,
     Claude,
     Codex,
     Opencode,
+}
+
+impl Provider {
+    /// Lowercase name used in manifests, overrides, CLI, and display.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pi => "pi",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Opencode => "opencode",
+        }
+    }
+
+    /// Parse a manifest/override/CLI agent name. Case-insensitive;
+    /// unknown names are rejected, never guessed.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "pi" | "pi-coding-agent" => Some(Self::Pi),
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "opencode" => Some(Self::Opencode),
+            _ => None,
+        }
+    }
 }
 
 /// The user's own working decision for a conversation.
@@ -44,7 +69,12 @@ impl ResumeState {
 /// Facts read from the Pi JSONL header, plus small fallbacks for display.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Metadata {
-    /// Stable Pi session id from the `session` record.
+    #[serde(default)]
+    pub provider: Provider,
+    /// OpenCode stores several sessions in one read-only database.
+    #[serde(default)]
+    pub database: Option<PathBuf>,
+    /// Stable provider session id from the `session` record.
     pub native_id: String,
     /// Canonical transcript path. The JSONL file stays authoritative.
     pub file: PathBuf,
@@ -65,6 +95,10 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    pub fn source_file(&self) -> &Path {
+        self.database.as_deref().unwrap_or(&self.file)
+    }
+
     /// Human title with clear fallbacks. Never used as an identity key.
     pub fn title(&self) -> String {
         if !self.name.is_empty() {
@@ -133,6 +167,9 @@ impl Session {
 
     /// Short presence line for the detail panel.
     pub fn presence(&self) -> &'static str {
+        if self.id.starts_with("pane-") {
+            return "Open terminal (session unverified)";
+        }
         if self.bindings.is_empty() {
             if !self.probable.is_empty() {
                 return "Probable opening";
@@ -181,7 +218,7 @@ pub struct Binding {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
     pub sessions: Vec<Session>,
-    /// Pi panes with no verifiable conversation identity.
+    /// Agent panes with no verifiable conversation identity.
     pub unbound: Vec<crate::tmux::PaneIdentity>,
     pub warnings: Vec<String>,
     pub scanning: bool,
@@ -281,4 +318,24 @@ pub struct Message {
     pub text: String,
     pub time: i64,
     pub tool: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_labels_parse_round_trip() {
+        for provider in [
+            Provider::Pi,
+            Provider::Claude,
+            Provider::Codex,
+            Provider::Opencode,
+        ] {
+            assert_eq!(Provider::parse(provider.label()), Some(provider));
+        }
+        assert_eq!(Provider::parse("CODEX"), Some(Provider::Codex));
+        assert_eq!(Provider::parse(" pi "), Some(Provider::Pi));
+        assert_eq!(Provider::parse("herdr"), None);
+    }
 }

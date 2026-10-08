@@ -10,7 +10,7 @@ use agent_monitor::{
     service::Service,
     ui,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use std::{
     io::{self, IsTerminal, Write},
@@ -78,6 +78,11 @@ enum Cmd {
     },
     /// Refresh the catalog without starting or touching any agent.
     Sync,
+    /// Live agent panes and screen-state debugging (terminal only).
+    Agent {
+        #[command(subcommand)]
+        command: Agent,
+    },
     Sources {
         #[command(subcommand)]
         command: Sources,
@@ -85,6 +90,21 @@ enum Cmd {
     Integration {
         #[command(subcommand)]
         command: Integration,
+    },
+}
+#[derive(Subcommand)]
+enum Agent {
+    /// Explain one pane's screen classification with provenance.
+    /// `--file` classifies saved text offline; otherwise captures live.
+    Explain {
+        /// Pane target: `%id`, `socket:pane`, or agent name (unique match).
+        target: Option<String>,
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 #[derive(Subcommand)]
@@ -215,11 +235,18 @@ fn run(cli: Cli) -> Result<()> {
             app.refresh_filter();
             let rows = app.rows();
             if json {
-                return print_json(&rows);
+                return if open {
+                    print_json(
+                        &serde_json::json!({"sessions":rows,"panes":app.catalog.unbound.iter().filter(|p| app.project.as_ref().is_none_or(|cwd| *cwd == p.cwd)).collect::<Vec<_>>()}),
+                    )
+                } else {
+                    print_json(&rows)
+                };
             }
             for s in &rows {
                 println!(
-                    "{}  {}  {}\n  {}",
+                    "[{}] {}  {}  {}\n  {}",
+                    s.metadata.provider.label(),
                     paths::line(&s.metadata.title()),
                     s.state.label(),
                     s.presence(),
@@ -230,10 +257,18 @@ fn run(cli: Cli) -> Result<()> {
                 println!("No sessions in {}. Use --all for history.", view.label());
             }
             if !app.catalog.unbound.is_empty() {
-                println!(
-                    "\n{} unassociated Pi panes: integration pi install, then /reload.",
-                    app.catalog.unbound.len()
-                );
+                let pi_panes = app
+                    .catalog
+                    .unbound
+                    .iter()
+                    .filter(|p| p.provider == Some(agent_monitor::model::Provider::Pi))
+                    .count();
+                if pi_panes > 0 {
+                    println!(
+                        "\n{} unassociated Pi panes: integration pi install, then /reload.",
+                        pi_panes
+                    );
+                }
             }
             Ok(())
         }
@@ -274,6 +309,14 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Agent { command } => match command {
+            Agent::Explain {
+                target,
+                file,
+                agent,
+                json,
+            } => explain(target, file, agent, json),
+        },
         Cmd::Done { id } => service.store.change(&id, Some(ResumeState::Done), None),
         Cmd::Reopen { id } => service.store.change(&id, Some(ResumeState::Resume), None),
         Cmd::Note { id, text } => service.store.change(&id, None, Some(&text)),
@@ -308,7 +351,7 @@ fn run(cli: Cli) -> Result<()> {
             if !resume {
                 ensure!(
                     io::stdin().is_terminal() && io::stdout().is_terminal(),
-                    "pass --resume to authorize a non-interactive Pi start"
+                    "pass --resume to authorize a non-interactive agent start"
                 );
                 print!(
                     "Resume '{}' in a new tmux window/session, folder {}? [y/N] ",
@@ -331,6 +374,93 @@ fn run(cli: Cli) -> Result<()> {
             service.store.manage(&fresh.file)
         }
     }
+}
+/// Explain one pane's screen classification with full provenance,
+/// mirroring `herdr agent explain`. Offline `--file` mode is pure and
+/// scriptable; live mode captures the pane read-only and classifies it.
+/// Never writes, never touches stored state.
+fn explain(
+    target: Option<String>,
+    file: Option<PathBuf>,
+    agent: Option<String>,
+    json: bool,
+) -> Result<()> {
+    use agent_monitor::{activity, model::Provider};
+    if let Some(path) = file {
+        let agent = agent
+            .as_deref()
+            .and_then(Provider::parse)
+            .context("pass --agent with pi, claude, codex, or opencode")?;
+        let raw = std::fs::read_to_string(&path)?;
+        let tail = paths::clean(&raw);
+        let (state, evidence) = activity::classify(agent, "", &tail);
+        let body = serde_json::json!({
+            "agent": agent.label(),
+            "state": state.label(),
+            "rule": evidence.rule_id,
+            "manifest": evidence.manifest_source,
+            "manifest_version": evidence.manifest_version,
+            "fallback": evidence.fallback_reason,
+            "title_signal": evidence.title_signal,
+        });
+        if json {
+            return print_json(&body);
+        }
+        println!("{}", activity::describe(agent, state, &evidence));
+        return Ok(());
+    }
+    let wanted = agent.as_deref().and_then(Provider::parse);
+    if agent.is_some() && wanted.is_none() {
+        anyhow::bail!("unknown agent: use pi, claude, codex, or opencode");
+    }
+    let panes = agent_monitor::tmux::discover(&agent_monitor::tmux::TmuxConfig::default())?;
+    let mut candidates: Vec<_> = panes
+        .into_iter()
+        .filter(|p| p.provider.is_some())
+        .filter(|p| wanted.is_none_or(|w| p.provider == Some(w)))
+        .collect();
+    if let Some(target) = target.as_deref() {
+        let trimmed: Vec<_> = candidates
+            .into_iter()
+            .filter(|p| {
+                p.pane == target
+                    || format!("{}:{}", p.socket, p.pane) == target
+                    || p.provider.is_some_and(|pr| pr.label() == target)
+            })
+            .collect();
+        candidates = trimmed;
+    }
+    ensure!(
+        candidates.len() == 1,
+        "pane target is ambiguous or missing: use %id, socket:pane, or a unique agent name"
+    );
+    let pane = &candidates[0];
+    let provider = pane.provider.context("pane has no recognized agent")?;
+    let tail = match agent_monitor::tmux::capture_pane(&pane.socket, &pane.pane, 40) {
+        Ok(raw) => paths::clean(&raw),
+        Err(e) => anyhow::bail!("could not capture pane: {e:#}"),
+    };
+    let (state, evidence) = activity::classify(provider, &pane.title, &tail);
+    let body = serde_json::json!({
+        "agent": provider.label(),
+        "target": pane.target,
+        "title": pane.title,
+        "state": state.label(),
+        "rule": evidence.rule_id,
+        "manifest": evidence.manifest_source,
+        "manifest_version": evidence.manifest_version,
+        "fallback": evidence.fallback_reason,
+        "title_signal": evidence.title_signal,
+    });
+    if json {
+        return print_json(&body);
+    }
+    println!(
+        "{}  {}",
+        paths::line(&pane.target),
+        activity::describe(provider, state, &evidence)
+    );
+    Ok(())
 }
 fn resolve_project(
     catalog: &agent_monitor::model::Catalog,

@@ -43,7 +43,7 @@ impl CommandMenu {
             selected: 0,
         };
         menu.add(
-            "Trova",
+            "Find",
             match app.panel {
                 Panel::Projects => "Search projects",
                 Panel::Sessions => "Search sessions",
@@ -71,10 +71,11 @@ impl CommandMenu {
             );
         } else {
             let session = app.current();
-            let persistent = session.is_some_and(|s| !s.id.starts_with("live-"));
+            let persistent =
+                session.is_some_and(|s| !s.id.starts_with("live-") && !s.id.starts_with("pane-"));
             menu.add(
                 "Session",
-                "Go to Pi or resume the work",
+                "Open the agent or resume the work",
                 "Enter",
                 KeyCode::Enter,
                 "When the pane is gone, reopen the same conversation in tmux.",
@@ -93,7 +94,7 @@ impl CommandMenu {
                 "Mark as done",
                 "d",
                 KeyCode::Char('d'),
-                "Never closes Pi or tmux: only changes the work state.",
+                "Never closes agents or tmux: only changes the work state.",
                 persistent && session.is_some_and(|s| s.state != ResumeState::Done),
             );
             menu.add(
@@ -185,10 +186,10 @@ impl CommandMenu {
         );
         menu.add(
             "Navigate",
-            "Browse open Pi runs",
+            "Browse open agent runs",
             "o",
             KeyCode::Char('o'),
-            "Pick an existing pane, even without the extension.",
+            "Pick an existing pane: Pi, Claude, Codex, or Opencode.",
             true,
         );
         menu.add(

@@ -22,7 +22,8 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
     state = root / 'state'
     env = dict(os.environ, PI_CODING_AGENT_SESSION_DIR=str(source),
                PI_CODING_AGENT_DIR=str(root / 'pi'), TMUX_TMPDIR=str(root / 'no-tmux'),
-               TERM='xterm-256color', NO_COLOR='1')
+               CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
+               XDG_DATA_HOME=str(root / 'data'), TERM='xterm-256color', NO_COLOR='1')
     for key in ('TMUX', 'TMUX_PANE', 'AGENT_MONITOR_HOME'):
         env.pop(key, None)
 
@@ -58,6 +59,46 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
     denied = subprocess.run([str(binary), '--data-dir', str(state), 'open', identity],
                             env=env, capture_output=True, text=True, timeout=15)
     assert denied.returncode != 0
+    # Offline screen classification: pure, no tmux, no agent process.
+    screen = root / 'screen.txt'
+    screen.write_text('⠼ Working on it\n')
+    out = json.loads(cli('agent', 'explain', '--file', str(screen), '--agent', 'codex', '--json').stdout)
+    assert out['state'] == 'working' and out['rule'] == 'spinner' and out['manifest'] == 'bundled'
+    bad = subprocess.run([str(binary), '--data-dir', str(state), 'agent', 'explain',
+                          '--file', str(screen), '--agent', 'bogus'],
+                         env=env, capture_output=True, text=True, timeout=15)
+    assert bad.returncode != 0
+
+    # All providers use local fixtures; no real home-directory history is read.
+    claude = root / 'claude' / 'projects' / 'fixture'
+    claude.mkdir(parents=True)
+    (claude / 'claude.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in [
+        dict(type='mode', sessionId='claude-native'),
+        dict(type='user', sessionId='claude-native', cwd=str(root), uuid='cu',
+             parentUuid=None, timestamp='2026-01-01T00:00:00Z',
+             message=dict(role='user', content='Claude fixture')),
+        dict(type='assistant', sessionId='claude-native', uuid='ca', parentUuid='cu',
+             message=dict(role='assistant', content=[dict(type='text', text='Claude reply')]))]))
+    codex = root / 'codex' / 'sessions'
+    codex.mkdir(parents=True)
+    (codex / 'codex.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in [
+        dict(type='session_meta', payload=dict(id='codex-native', cwd=str(root), timestamp='2026-01-01T00:00:00Z')),
+        dict(type='response_item', payload=dict(type='message', role='user', content=[dict(type='input_text', text='Codex fixture')]))]))
+    import sqlite3
+    opencode = root / 'data' / 'opencode'
+    opencode.mkdir(parents=True)
+    with sqlite3.connect(opencode / 'opencode.db') as db:
+        db.executescript('CREATE TABLE session_v2(id TEXT,directory TEXT,title TEXT,parent_id TEXT,time_created INTEGER,time_updated INTEGER); CREATE TABLE session_message(id TEXT,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,data TEXT);')
+        db.execute('INSERT INTO session_v2 VALUES(?,?,?,?,?,?)', ('ses_fixture', str(root), 'OpenCode fixture', None, 1, 2))
+        db.execute('INSERT INTO session_message VALUES(?,?,?,?,?,?)', ('om', 'ses_fixture', 'user', 1, 1, json.dumps(dict(text='OpenCode request'))))
+    rows = json.loads(cli('sessions', '--all', '--json').stdout)
+    assert {s['metadata']['provider'] for s in rows} == {'pi', 'claude', 'codex', 'opencode'}
+    for provider in ('claude', 'codex', 'opencode'):
+        saved = next(s for s in rows if s['metadata']['provider'] == provider)
+        preview = json.loads(cli('show', saved['id'], '--json').stdout)
+        assert preview['conversation']['messages'] and not preview['conversation']['partial']
+    opened = json.loads(cli('sessions', '--open', '--json').stdout)
+    assert 'sessions' in opened and 'panes' in opened
 
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 120, 0, 0))
@@ -102,7 +143,7 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
         process.wait(timeout=3)
         assert process.returncode == 0
         assert time.monotonic() - start < 1
-        print('PASS: native sessions, resume states, notes, undo, PTY resize and quit')
+        print('PASS: four-provider sessions, previews, resume states, notes, undo, PTY resize and quit')
     finally:
         if process.poll() is None:
             process.kill()

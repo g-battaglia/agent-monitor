@@ -4,7 +4,7 @@
 ╭ Al│                                                                      │───╮
 │›  │  Search sessions                                           /         │   │
 │   │  Session                                                             │   │
-│   │  Go to Pi or resume the work                               Enter     │   │
+│   │  Open the agent or resume the work                         Enter     │   │
 │   │  Edit the next step                                        n         │   │
 │   │  Mark as done                                              d         │   │
 │   │  Mark to resume                                            r         │   │
@@ -13,7 +13,7 @@
 │   │  Navigate                                                            │   │
 │   │  Change view                                               f         │   │
 │   │  Pick another project                                      p         │   │
-│   │  Browse open Pi runs                                       o         │   │
+│   │  Browse open agent runs                                    o         │   │
 │   │  Move to the next panel                                    Tab       │   │
 │   │  Catalog                                                             │   │
 │   │› Refresh the catalog                                       R         │   │

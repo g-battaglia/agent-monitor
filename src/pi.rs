@@ -6,7 +6,7 @@
 //! opaque payloads are skipped by design. Nothing here writes, migrates,
 //! or opens Pi's own SessionManager.
 use crate::{
-    model::{Conversation, Message, Metadata},
+    model::{Conversation, Message, Metadata, Provider},
     paths,
 };
 use anyhow::{Context, Result, ensure};
@@ -58,7 +58,7 @@ fn sample(file: &mut File, offset: u64, len: usize) -> Result<u64> {
     Ok(hash(&buf[..n]))
 }
 /// Accept epoch millis or RFC3339 strings; anything else means "unknown".
-fn timestamp(value: &Value) -> i64 {
+pub(crate) fn timestamp(value: &Value) -> i64 {
     value
         .as_i64()
         .or_else(|| {
@@ -85,7 +85,12 @@ pub fn text(value: &Value) -> String {
         .map(|blocks| {
             blocks
                 .iter()
-                .filter(|b| b["type"] == "text")
+                .filter(|b| {
+                    matches!(
+                        b["type"].as_str(),
+                        Some("text" | "input_text" | "output_text")
+                    )
+                })
                 .filter_map(|b| b["text"].as_str())
                 .map(paths::clean)
                 .collect::<Vec<_>>()
@@ -153,7 +158,9 @@ fn update(meta: &mut Metadata, e: &Value) -> Result<()> {
     if e["type"] != "session" {
         let id = e["id"].as_str();
         ensure!(id.is_none_or(|id| id.len() <= 128), "entry id too long");
-        meta.leaf = id.map(str::to_string);
+        if let Some(id) = id {
+            meta.leaf = Some(id.to_string());
+        }
     }
     Ok(())
 }
@@ -211,6 +218,13 @@ pub fn scan(path: &Path, previous: Option<&Cursor>) -> Result<(Cursor, bool)> {
                 continue;
             }
         };
+        crate::formats::identify(&mut cursor.metadata, &entry)?;
+        let entry = crate::formats::entry(
+            cursor.metadata.provider,
+            &entry,
+            cursor.offset,
+            cursor.metadata.leaf.as_deref(),
+        );
         update(&mut cursor.metadata, &entry)?;
         cursor.offset += n as u64;
         if cursor.offset - start >= CHUNK {
@@ -219,7 +233,7 @@ pub fn scan(path: &Path, previous: Option<&Cursor>) -> Result<(Cursor, bool)> {
     }
     ensure!(
         !cursor.metadata.native_id.is_empty(),
-        "Pi header is missing or still incomplete"
+        "session identity is missing or still incomplete"
     );
     cursor.inode = stat.ino();
     cursor.device = stat.dev();
@@ -242,23 +256,36 @@ pub fn is_session(path: &Path) -> Result<bool> {
         .take((MAX_LINE + 1) as u64)
         .read_until(b'\n', &mut buf)?;
     ensure!(buf.len() <= MAX_LINE, "header too large");
-    Ok(serde_json::from_slice::<Value>(&buf).is_ok_and(|v| v["type"] == "session"))
+    Ok(serde_json::from_slice::<Value>(&buf).is_ok_and(|v| {
+        v["type"] == "session" || v["type"] == "session_meta" || v["sessionId"].is_string()
+    }))
 }
 
 pub fn header(path: &Path) -> Result<Metadata> {
-    let mut buf = Vec::new();
-    BufReader::new(File::open(path)?)
-        .take((MAX_LINE + 1) as u64)
-        .read_until(b'\n', &mut buf)?;
-    ensure!(buf.len() <= MAX_LINE, "header too large");
-    let e: Value = serde_json::from_slice(&buf).context("invalid Pi header")?;
-    ensure!(e["type"] == "session", "Pi header is missing");
+    let mut reader = BufReader::new(File::open(path)?).take(MAX_LINE as u64);
     let mut meta = Metadata {
         file: paths::canonical(path),
         ..Default::default()
     };
-    update(&mut meta, &e)?;
-    Ok(meta)
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        if buf.last() != Some(&b'\n') {
+            break;
+        }
+        let e: Value = serde_json::from_slice(&buf).context("invalid session header")?;
+        crate::formats::identify(&mut meta, &e)?;
+        if e["type"] == "session" {
+            update(&mut meta, &e)?;
+        }
+        if !meta.native_id.is_empty() && !meta.cwd.is_empty() {
+            return Ok(meta);
+        }
+    }
+    anyhow::bail!("session header is missing or incomplete")
 }
 
 pub fn files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -269,7 +296,7 @@ pub fn files(root: &Path) -> Result<Vec<PathBuf>> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let typ = entry.file_type()?;
-            if typ.is_dir() && depth < 8 {
+            if typ.is_dir() && depth < 8 && entry.file_name() != "subagents" {
                 stack.push((entry.path(), depth + 1));
             } else if typ.is_file() && entry.path().extension().is_some_and(|e| e == "jsonl") {
                 files.push(paths::canonical(&entry.path()));
@@ -293,7 +320,9 @@ pub fn conversation_page(
     tools: bool,
     page: usize,
 ) -> Result<Conversation> {
+    let provider = header(path)?.provider;
     let mut reader = BufReader::new(File::open(path)?);
+    let mut previous = None::<String>;
     let mut entries = HashMap::<String, (Option<String>, u64, usize, String)>::new();
     let mut children = HashSet::new();
     let mut order = vec![];
@@ -319,6 +348,10 @@ pub fn conversation_page(
             break;
         }
         if let Ok(e) = serde_json::from_slice::<Value>(&buffer) {
+            let e = crate::formats::entry(provider, &e, offset, previous.as_deref());
+            if let Some(id) = e["id"].as_str() {
+                previous = Some(id.to_string());
+            }
             if e["type"] != "session"
                 && let Some(id) = e["id"].as_str()
             {
@@ -414,6 +447,7 @@ pub fn conversation_page(
         buffer.resize(len, 0);
         file.read_exact(&mut buffer)?;
         let e: Value = serde_json::from_slice(&buffer)?;
+        let e = crate::formats::entry(provider, &e, offset, None);
         let time = timestamp(&e["timestamp"]);
         let message = match str_field(&e, "type") {
             "message" => {
@@ -437,7 +471,16 @@ pub fn conversation_page(
                                 body.push_str(&format!("\n[Tool: {}]", str_field(call, "name")));
                             }
                         }
-                        Some(("Pi", body, false))
+                        Some((
+                            match provider {
+                                Provider::Pi => "Pi",
+                                Provider::Claude => "Claude",
+                                Provider::Codex => "Codex",
+                                Provider::Opencode => "OpenCode",
+                            },
+                            body,
+                            false,
+                        ))
                     }
                     "toolResult" if tools => Some(("Tool", text(&msg["content"]), true)),
                     _ => None,

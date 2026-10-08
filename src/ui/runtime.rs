@@ -220,6 +220,15 @@ impl Runtime {
             }
             return false;
         }
+        if matches!(key.code, KeyCode::Char('n' | 'd' | 'r' | 'u'))
+            && self
+                .app
+                .current()
+                .is_some_and(|s| s.id.starts_with("pane-") || s.id.starts_with("live-"))
+        {
+            self.app.status = "Saved session identity required for notes and decisions; Enter focuses this terminal.".into();
+            return false;
+        }
         match key.code {
             KeyCode::Char('q') => return true,
             KeyCode::Char('j') | KeyCode::Down => self.step(1),
@@ -294,7 +303,8 @@ impl Runtime {
             KeyCode::Char('i') => {
                 if let Some(s) = self.app.current() {
                     self.dialog = Some(Dialog::Info(format!(
-                        "Session info\n\nName: {}\nFolder: {}\nFile: {}\nPi ID: {}\nCreated: {}\n\nEsc closes",
+                        "Session info\n\nAgent: {}\nName: {}\nFolder: {}\nFile: {}\nSession ID: {}\nCreated: {}\n\nEsc closes",
+                        s.metadata.provider.label(),
                         paths::line(&s.metadata.title()),
                         paths::line(&s.metadata.cwd),
                         paths::line(&s.metadata.file.to_string_lossy()),
@@ -355,11 +365,7 @@ impl Runtime {
             KeyCode::Char('R') => self.action(Action::Refresh),
             KeyCode::Enter => {
                 if self.app.panel == Panel::Projects {
-                    self.app.project = self
-                        .app
-                        .project_row
-                        .checked_sub(1)
-                        .and_then(|i| self.app.projects().get(i).cloned());
+                    self.app.choose_project(self.app.project_row);
                     self.app.panel = Panel::Sessions;
                     self.filter_changed();
                 } else if let Some(s) = self.app.current() {
@@ -472,10 +478,7 @@ impl Runtime {
                 *row =
                     (*row as isize + delta).clamp(0, self.app.projects().len() as isize) as usize;
                 if accepted {
-                    self.app.project_row = *row;
-                    self.app.project = row
-                        .checked_sub(1)
-                        .and_then(|i| self.app.projects().get(i).cloned());
+                    self.app.choose_project(*row);
                     self.filter_changed();
                     false
                 } else {
@@ -615,7 +618,7 @@ impl Runtime {
                 *row,
             ),
             Dialog::Probable(panes, row, context) => format!(
-                "{}\n\n{}\n\nName and folder match. Pi identity is unconfirmed.\nEnter opens this window · Esc cancels",
+                "{}\n\n{}\n\nTerminal detected; saved conversation identity is unconfirmed.\nEnter opens this window · Esc cancels",
                 paths::line(context),
                 picker(
                     "Where do you want to continue?",
@@ -635,10 +638,10 @@ impl Runtime {
                 paths::line(warning),
             ),
             Dialog::Panes(row) => format!(
-                "{}\n\nEnter explores the pane · Esc closes.\nThe extension is optional and verifies the exact file.",
+                "{}\n\nEnter explores the pane · Esc closes.\nActivity words are screen guesses, not verified state.",
                 picker(
-                    "Pi panes without a conversation identity",
-                    self.app.catalog.unbound.iter().map(|p| format!("{}  {}", paths::line(&p.target), paths::line(&p.title))).collect(),
+                    "Agent panes without a conversation identity",
+                    self.app.catalog.unbound.iter().map(|p| format!("{}  {}", paths::line(&p.target), super::render::unbound_label(p))).collect(),
                     *row,
                 ),
             ),
@@ -788,7 +791,7 @@ pub fn run(root: std::path::PathBuf, project: Option<String>) -> Result<()> {
                         runtime.app.status = result
                             .err()
                             .map(|e| paths::line(&format!("{e:#}")))
-                            .unwrap_or_else(|| "Tornato al monitor".into());
+                            .unwrap_or_else(|| "Back in the monitor".into());
                         runtime.detail_version = None;
                         runtime.action(Action::Refresh);
                     }
@@ -1052,6 +1055,56 @@ mod tests {
         runtime.paste("one".into());
         assert_eq!(runtime.app.search, "one");
         assert_eq!(runtime.app.project_search, "acme");
+    }
+    #[test]
+    fn choosing_all_projects_clears_open_view_and_hidden_search() {
+        let mut runtime = fixture();
+        let mut saved = session("historical");
+        saved.state = ResumeState::History;
+        saved.metadata.cwd = "/repo/project".into();
+        runtime.app.apply(Catalog {
+            sessions: vec![saved],
+            ..Default::default()
+        });
+        runtime.app.view = View::Open;
+        runtime.app.search = "missing".into();
+        runtime.app.project = Some("/repo/project".into());
+        runtime.app.refresh_filter();
+        assert!(runtime.app.rows().is_empty());
+        runtime.app.panel = Panel::Projects;
+        runtime.app.project_row = 0;
+        runtime.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.view, View::All);
+        assert!(runtime.app.project.is_none());
+        assert!(runtime.app.search.is_empty());
+        assert_eq!(runtime.app.rows().len(), 1);
+        // The p picker uses the same reset behavior.
+        runtime.app.view = View::Done;
+        runtime.dialog = Some(Dialog::Projects(0));
+        runtime.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.view, View::All);
+    }
+    #[test]
+    fn live_rows_can_focus_but_cannot_queue_persistent_decisions() {
+        let mut runtime = fixture();
+        let (actions, requests) = std::sync::mpsc::sync_channel(16);
+        runtime.worker.actions = actions;
+        let mut live = session("pane-unidentified");
+        live.available = false;
+        runtime.app.apply(Catalog {
+            sessions: vec![live],
+            ..Default::default()
+        });
+        for code in ['d', 'r', 'n', 'u'] {
+            runtime.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE), 24);
+            assert!(requests.try_recv().is_err());
+        }
+        assert!(
+            runtime
+                .app
+                .status
+                .contains("Saved session identity required")
+        );
     }
     #[test]
     fn polling_keeps_selection_and_viewport() {

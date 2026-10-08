@@ -102,6 +102,18 @@ impl App {
             Panel::Detail => &mut self.detail_search,
         }
     }
+    /// The All-projects action is an escape hatch from every list filter.
+    pub fn choose_project(&mut self, row: usize) {
+        self.project_row = row;
+        self.project = row
+            .checked_sub(1)
+            .and_then(|i| self.project_paths.get(i).cloned());
+        if row == 0 {
+            self.view = View::All;
+            self.search.clear();
+            self.project_search.clear();
+        }
+    }
     pub fn refresh_filter(&mut self) {
         let project_needle = self.project_search.to_lowercase();
         self.project_paths = self
@@ -128,7 +140,8 @@ impl App {
                     && self.project.as_ref().is_none_or(|p| *p == s.metadata.cwd)
                     && (needle.is_empty()
                         || format!(
-                            "{} {} {} {}",
+                            "{} {} {} {} {}",
+                            s.metadata.provider.label(),
                             s.metadata.title(),
                             s.metadata.cwd,
                             project_label(&s.metadata.cwd),
@@ -139,6 +152,14 @@ impl App {
             })
             .map(|(i, _)| i)
             .collect();
+        if self.view == View::All {
+            // Open terminals must not be buried under hundreds of historical rows.
+            // Stable sorting retains newest-first history within each group.
+            self.visible.sort_by_key(|i| {
+                let s = &self.catalog.sessions[*i];
+                s.bindings.is_empty() && s.probable.is_empty() && !s.id.starts_with("pane-")
+            });
+        }
     }
     pub fn rows(&self) -> Vec<&Session> {
         self.visible

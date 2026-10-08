@@ -26,6 +26,15 @@ pub struct PaneIdentity {
     #[serde(default)]
     pub title: String,
     pub provider: Option<Provider>,
+    /// Screen-inferred activity (Herdr-style). Ephemeral: recomputed each
+    /// presence tick, never persisted. `None` = not sampled (unrecognized
+    /// provider, verified binding, or capture failure).
+    #[serde(default)]
+    pub activity: Option<crate::activity::AgentActivity>,
+    /// Why the activity came out that way (rule id or fallback reason).
+    /// Display/provenance only; skipped in JSON snapshots.
+    #[serde(default, skip_serializing)]
+    pub activity_evidence: Option<crate::activity::MatchEvidence>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,12 +70,18 @@ pub fn socket_key(socket: &str) -> String {
 
 /// Snapshot same-user processes once per discovery pass.
 /// Other users are ignored before any matching happens.
+///
+/// Uses `args=` (full command line), not `comm=` (basename, truncated to
+/// 15 chars): the wrapper hint (`AGENT_MONITOR_AGENT=` on the command)
+/// is only recoverable from the full line. The executable basename is
+/// derived from the first whitespace-separated token; the whole line is
+/// kept for hint parsing.
 fn processes() -> Result<HashMap<u32, Proc>> {
     let output = crate::paths::output(
         Command::new("ps")
             .env("LC_ALL", "C")
             .env("TZ", "UTC")
-            .args(["-axo", "pid=,ppid=,uid=,lstart=,comm="]),
+            .args(["-axo", "pid=,ppid=,uid=,lstart=,args="]),
     )?;
     ensure!(output.status.success(), "cannot inspect processes");
     let mut result = HashMap::new();
@@ -106,16 +121,60 @@ fn distance(pid: u32, root: u32, all: &HashMap<u32, Proc>) -> Option<usize> {
     None
 }
 
-/// Recognize supported agents by exact executable basename.
-/// Substring matches such as `not-codex` must never count as an agent.
+/// Recognize supported agents from a full `ps args=` command line.
+///
+/// The executable is the first whitespace-separated token; only its exact
+/// basename counts (`not-codex` never matches). Wrapper hint: when that
+/// executable is an opaque sandbox/VM wrapper (see `WRAPPERS`), and the
+/// same command line carries `AGENT_MONITOR_AGENT=<agent>`, the pane is
+/// treated as that agent. The hint is per-command only — never read from
+/// the global environment — so exporting it globally cannot mislabel
+/// unrelated panes.
+const WRAPPERS: &[&str] = &["fence", "nono", "ssh", "docker", "kubectl"];
 fn provider(command: &str) -> Option<Provider> {
-    match Path::new(command).file_name()?.to_str()? {
+    // Shells launch tools as `ENV=… executable args…`: leading `NAME=value`
+    // tokens are environment, not the program. The executable is the first
+    // token without `=`; its exact basename is what counts.
+    let mut words = command.split_whitespace();
+    let executable = words.by_ref().find(|w| !w.contains('='))?;
+    let base = Path::new(executable).file_name()?.to_str()?;
+    if let Some(agent) = direct_provider(base) {
+        return Some(agent);
+    }
+    if WRAPPERS.contains(&base) {
+        return wrapper_hint(command).and_then(direct_provider);
+    }
+    None
+}
+fn direct_provider(base: &str) -> Option<Provider> {
+    match base {
         "pi" | "pi-coding-agent" => Some(Provider::Pi),
         "claude" => Some(Provider::Claude),
         "codex" => Some(Provider::Codex),
         "opencode" => Some(Provider::Opencode),
         _ => None,
     }
+}
+/// Extract `AGENT_MONITOR_AGENT=<agent>` from a wrapper command line.
+/// Only the `NAME=value` prefix form and `--env NAME=value` count;
+/// anything else (bare flags, positional args) is ignored.
+fn wrapper_hint(command: &str) -> Option<&str> {
+    const KEY: &str = "AGENT_MONITOR_AGENT=";
+    let mut words = command.split_whitespace();
+    let mut expect_value = false;
+    for word in words.by_ref() {
+        if expect_value {
+            expect_value = false;
+            if let Some(value) = word.strip_prefix(KEY) {
+                return Some(value);
+            }
+        } else if word == "--env" {
+            expect_value = true;
+        } else if let Some(value) = word.strip_prefix(KEY) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Which tmux servers to query: explicit config first, otherwise the
@@ -221,10 +280,42 @@ pub fn discover(config: &TmuxConfig) -> Result<Vec<PaneIdentity>> {
                 command: clean(fields[2]),
                 title: clean(fields[7]),
                 provider: tool,
+                activity: None,
+                activity_evidence: None,
             });
         }
     }
     Ok(panes)
+}
+
+/// Read-only snapshot of the live bottom of a pane's terminal buffer.
+///
+/// Exact argv: `capture-pane -p -t <pane> -S -<lines>` — no shell,
+/// no writes, no input. Output is capped (`MAX_CAPTURE`) and the caller
+/// maps failures to `Unknown`, never to status-line errors. Use
+/// `paths::clean` on the result before matching or display.
+const MAX_CAPTURE: usize = 64 * 1024;
+pub fn capture_pane(socket: &str, pane: &str, lines: u32) -> Result<String> {
+    capture_with(std::ffi::OsStr::new("tmux"), socket, pane, lines)
+}
+/// Same as `capture_pane` with an injectable binary for tests.
+/// Production always passes the real `tmux`; tests pass a fake script.
+fn capture_with(program: &std::ffi::OsStr, socket: &str, pane: &str, lines: u32) -> Result<String> {
+    let lines = lines.clamp(1, 200).to_string();
+    let mut command = Command::new(program);
+    command.args(["-S", socket]);
+    let output = crate::paths::output(command.args([
+        "capture-pane",
+        "-p",
+        "-t",
+        pane,
+        "-S",
+        &format!("-{lines}"),
+    ]))?;
+    ensure!(output.status.success(), "capture-pane failed");
+    let output = String::from_utf8_lossy(&output.stdout).into_owned();
+    ensure!(output.len() <= MAX_CAPTURE, "pane capture exceeds 64 KiB");
+    Ok(output)
 }
 
 /// Count live Pi processes with no extension record.
@@ -306,7 +397,8 @@ fn same_hint(current: &PaneIdentity, selected: &PaneIdentity) -> bool {
         && current.client_start == selected.client_start
         && current.title == selected.title
         && current.cwd == selected.cwd
-        && current.provider == Some(Provider::Pi)
+        && current.provider.is_some()
+        && current.provider == selected.provider
 }
 
 pub fn focus(identity: &PaneIdentity, config: &TmuxConfig) -> Result<()> {
@@ -357,17 +449,21 @@ pub fn focus(identity: &PaneIdentity, config: &TmuxConfig) -> Result<()> {
 /// unique name. Every tmux invocation passes argv directly (execvp):
 /// file paths and titles are never interpolated into a shell command.
 pub fn resume(file: &Path, cwd: &Path, title: &str) -> Result<()> {
+    let file = file.to_str().context("session path is not UTF-8")?;
+    resume_command(&["pi".into(), "--session".into(), file.into()], cwd, title)
+}
+pub fn resume_command(argv: &[String], cwd: &Path, title: &str) -> Result<()> {
     let socket = std::env::var("TMUX").ok().and_then(|v| {
         v.rsplit_once(',')
             .and_then(|(v, _)| v.rsplit_once(','))
             .map(|(s, _)| s.to_owned())
     });
     let monitor = std::env::var("TMUX_PANE").ok();
-    let opened = resume_with(
+    let opened = resume_command_with(
         std::ffi::OsStr::new("tmux"),
         socket.as_deref(),
         monitor.as_deref(),
-        file,
+        argv,
         cwd,
         title,
     )?;
@@ -389,6 +485,7 @@ pub fn resume(file: &Path, cwd: &Path, title: &str) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
 fn resume_with(
     program: &std::ffi::OsStr,
     socket: Option<&str>,
@@ -397,6 +494,28 @@ fn resume_with(
     cwd: &Path,
     title: &str,
 ) -> Result<Option<String>> {
+    resume_command_with(
+        program,
+        socket,
+        monitor,
+        &[
+            "pi".into(),
+            "--session".into(),
+            file.to_string_lossy().into_owned(),
+        ],
+        cwd,
+        title,
+    )
+}
+fn resume_command_with(
+    program: &std::ffi::OsStr,
+    socket: Option<&str>,
+    monitor: Option<&str>,
+    argv: &[String],
+    cwd: &Path,
+    title: &str,
+) -> Result<Option<String>> {
+    ensure!(!argv.is_empty(), "missing agent command");
     let run = |args: &[&str]| -> Result<String> {
         let mut command = Command::new(program);
         if let Some(socket) = socket {
@@ -459,27 +578,25 @@ fn resume_with(
         if name.is_empty() { "pi" } else { &name },
         &uuid::Uuid::new_v4().to_string()[..8]
     );
-    let file = file.to_str().context("Pi path is not UTF-8")?;
     let cwd = cwd.to_str().context("Project directory is not UTF-8")?;
-    let output = if matching.len() == 1 {
-        run(&[
+    let target = matching.first().map(|id| format!("{id}:"));
+    let name = crate::paths::line(title);
+    let mut args = if matching.len() == 1 {
+        vec![
             "new-window",
             "-d",
             "-P",
             "-F",
             "#{pane_id}\t#{session_id}",
             "-t",
-            &format!("{}:", matching[0]),
+            target.as_deref().unwrap(),
             "-n",
-            &crate::paths::line(title),
+            &name,
             "-c",
             cwd,
-            "pi",
-            "--session",
-            file,
-        ])?
+        ]
     } else {
-        run(&[
+        vec![
             "new-session",
             "-d",
             "-P",
@@ -488,14 +605,13 @@ fn resume_with(
             "-s",
             &unique,
             "-n",
-            &crate::paths::line(title),
+            &name,
             "-c",
             cwd,
-            "pi",
-            "--session",
-            file,
-        ])?
+        ]
     };
+    args.extend(argv.iter().map(String::as_str));
+    let output = run(&args)?;
     let (pane, session) = output
         .trim()
         .split_once('\t')
@@ -552,8 +668,16 @@ mod tests {
             command: "pi".into(),
             title: "π - release-notes - project".into(),
             provider: Some(Provider::Pi),
+            activity: None,
+            activity_evidence: None,
         };
         assert!(same_hint(&pane, &pane));
+        for provider in [Provider::Claude, Provider::Codex, Provider::Opencode] {
+            let mut other = pane.clone();
+            other.provider = Some(provider);
+            assert!(same_hint(&other, &other));
+            assert!(!same_hint(&other, &pane));
+        }
         let mut changed = pane.clone();
         changed.title = "π - another - project".into();
         assert!(!same_hint(&changed, &pane));
@@ -652,6 +776,23 @@ mod tests {
         let log = std::fs::read_to_string(dir.path().join("log")).unwrap();
         assert!(!log.contains("new-window"));
         assert!(!log.contains("new-session"));
+        for argv in [
+            vec!["claude", "--resume", "native-id"],
+            vec!["codex", "resume", "native-id"],
+            vec!["opencode", "--session", "ses_one"],
+        ] {
+            std::fs::write(dir.path().join("log"), "").unwrap();
+            let command = argv.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            resume_command_with(script.as_os_str(), None, None, &command, &cwd, "fixture").unwrap();
+            let log = std::fs::read_to_string(dir.path().join("log")).unwrap();
+            let commands = log
+                .lines()
+                .map(|l| serde_json::from_str::<Vec<String>>(l).unwrap())
+                .collect::<Vec<_>>();
+            let create = commands.iter().find(|a| a[0] == "new-window").unwrap();
+            assert_eq!(&create[create.len() - command.len()..], command.as_slice());
+            assert!(!log.contains("send-keys") && !log.contains("kill-"));
+        }
     }
     fn fs_fixture(script: &Path) {
         std::fs::write(
@@ -673,6 +814,73 @@ else: sys.exit(1)
 "#,
         )
         .unwrap();
+    }
+    #[test]
+    fn provider_matches_exact_names_and_per_command_wrapper_hints() {
+        // Exact basenames only: substrings and unknown tools are ignored.
+        // Full `args=` lines, as processes() stores them.
+        assert_eq!(provider("/usr/local/bin/pi"), Some(Provider::Pi));
+        assert_eq!(
+            provider("pi-coding-agent --session f.jsonl"),
+            Some(Provider::Pi)
+        );
+        assert_eq!(provider("codex"), Some(Provider::Codex));
+        assert_eq!(provider("not-codex"), None);
+        assert_eq!(provider("zsh"), None);
+        // Truncated-basename lookalikes from comm= must not match.
+        assert_eq!(provider("pi-coding-age"), None);
+        // Opaque wrappers: only a per-command AGENT_MONITOR_AGENT hint counts.
+        assert_eq!(provider("fence -- claude"), None);
+        assert_eq!(
+            provider("AGENT_MONITOR_AGENT=claude fence -- claude"),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            provider("/usr/bin/ssh --env AGENT_MONITOR_AGENT=codex host"),
+            Some(Provider::Codex)
+        );
+        // The process environment is never consulted: only the command line
+        // carries the hint, so a global export cannot mislabel panes.
+        // (provider() takes no env input by construction.)
+        assert_eq!(provider("fence -- claude"), None);
+        // Unknown wrapper values never guess.
+        assert_eq!(provider("AGENT_MONITOR_AGENT=bogus fence"), None);
+    }
+    #[test]
+    fn capture_pane_is_read_only_bounded_and_capped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fake-tmux"),
+            "#!/usr/bin/env python3\nimport json,sys\nfrom pathlib import Path\nroot=Path(__file__).parent\nargs=sys.argv[1:]\nwith (root/'log').open('a') as f: f.write(json.dumps(args)+'\\n')\nif args[2:4]==['capture-pane','-p']: print('line1\\nline2')\nelse: sys.exit(1)\n",
+        )
+        .unwrap();
+        let fake = dir.path().join("fake-tmux");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let out = capture_with(fake.as_os_str(), "/fake/sock", "%9", 40).unwrap();
+        assert_eq!(out, "line1\nline2\n");
+        // 0 clamps to 1, huge values clamp to 200.
+        capture_with(fake.as_os_str(), "/fake/sock", "%9", 0).unwrap();
+        capture_with(fake.as_os_str(), "/fake/sock", "%9", 9999).unwrap();
+        // Over-cap output is refused, never truncated-and-matched.
+        std::fs::write(&fake, "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\0' 'x'\n").unwrap();
+        assert!(capture_with(fake.as_os_str(), "/fake/sock", "%9", 40).is_err());
+        let commands = std::fs::read_to_string(dir.path().join("log")).unwrap();
+        assert!(commands.contains("\"-S\", \"-40\""));
+        assert!(commands.contains("\"-S\", \"-1\""));
+        assert!(commands.contains("\"-S\", \"-200\""));
+        // Read-only: capture must never send input or touch panes.
+        for forbidden in [
+            "send-keys",
+            "send-prefix",
+            "kill-pane",
+            "kill-window",
+            "new-window",
+            "new-session",
+            "set-option",
+        ] {
+            assert!(!commands.contains(forbidden), "forbidden: {forbidden}");
+        }
     }
     #[test]
     fn focus_never_guesses_between_attached_clients() {

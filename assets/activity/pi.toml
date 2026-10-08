@@ -1,0 +1,9 @@
+# Bundled screen-detection manifest for Pi (v1).
+# Only used for Pi panes WITHOUT a verified extension binding.
+# Bound panes ([O]) always win; this never overrides them.
+manifest_version = 1
+
+[[rule]]
+id = "spinner"
+state = "working"
+screen_any = ["Working", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]

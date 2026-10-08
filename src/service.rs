@@ -1,7 +1,13 @@
 //! Shared CLI/TUI operations: indexing, catalog assembly, and resume specs.
+//!
+//! `catalog()` merges durable SQLite rows with live tmux/extension
+//! presence plus ephemeral screen activity (Herdr-style, terminal only).
+//! Activity is recomputed per call and never persisted: screen state is
+//! a guess about panes, never a fact about conversations.
 use crate::{
+    activity,
     model::*,
-    paths, pi, presence,
+    opencode, paths, pi, presence,
     store::{Source, Store},
     tmux,
 };
@@ -21,11 +27,12 @@ pub struct Service {
 
 /// Incremental scan state.
 pub struct Indexer {
-    queue: VecDeque<(Source, PathBuf)>,
+    queue: VecDeque<(Source, PathBuf, usize)>,
     sources: Vec<Source>,
     pub warnings: Vec<String>,
     pub initial: bool,
     failed: std::collections::HashSet<PathBuf>,
+    names: std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>,
 }
 impl Indexer {
     pub fn pending(&self) -> bool {
@@ -42,6 +49,11 @@ impl Service {
         if standard.is_dir() {
             store.add_source(&standard)?;
         }
+        for path in other_sources() {
+            if path.exists() {
+                store.add_source(&path)?;
+            }
+        }
         Ok(Self { root, store })
     }
     pub fn begin_index(&self) -> Result<Indexer> {
@@ -52,8 +64,23 @@ impl Service {
             sources,
             warnings: vec![],
             failed: Default::default(),
+            names: Default::default(),
         };
         for source in &indexer.sources {
+            if let Some(parent) = source.path.parent() {
+                let titles = parent.join("session_index.jsonl");
+                if titles.is_file() {
+                    match crate::formats::codex_names(&titles) {
+                        Ok(names) => {
+                            indexer.names.insert(source.path.clone(), names);
+                        }
+                        Err(e) => indexer.warnings.push(format!(
+                            "Codex titles unavailable: {}",
+                            paths::line(&e.to_string())
+                        )),
+                    }
+                }
+            }
             match if source.path.is_file() {
                 Ok(vec![paths::canonical(&source.path)])
             } else {
@@ -69,7 +96,7 @@ impl Service {
                     });
                     indexer
                         .queue
-                        .extend(files.into_iter().map(|p| (source.clone(), p)));
+                        .extend(files.into_iter().map(|p| (source.clone(), p, 0)));
                 }
                 Err(_) => {
                     indexer.failed.insert(source.path.clone());
@@ -83,35 +110,74 @@ impl Service {
         Ok(indexer)
     }
     pub fn index_step(&self, indexer: &mut Indexer) -> Result<()> {
-        if let Some((source, path)) = indexer.queue.pop_front() {
-            let previous = self.store.cursor(&path)?;
-            let recognized = previous.is_some() || pi::is_session(&path).unwrap_or(true);
-            let stat = fs::metadata(&path);
-            let unchanged = previous
-                .as_ref()
-                .zip(stat.as_ref().ok())
-                .is_some_and(|(c, m)| {
-                    c.offset == m.len()
-                        && c.size == m.len()
-                        && c.inode == m.ino()
-                        && c.device == m.dev()
-                        && c.mtime == m.mtime() * 1_000_000_000 + m.mtime_nsec()
-                });
-            if recognized && !unchanged {
-                match pi::scan(&path, previous.as_ref()) {
-                    Ok((cursor, more)) => {
-                        self.store.ingest(&source, &cursor)?;
+        if let Some((source, path, offset)) = indexer.queue.pop_front() {
+            if path.extension().is_some_and(|e| e == "db") {
+                match opencode::batch(&path, offset) {
+                    Ok((cursors, more)) => {
+                        for cursor in cursors {
+                            self.store.ingest(&source, &cursor)?;
+                        }
                         if more {
-                            indexer.queue.push_front((source, path));
+                            indexer.queue.push_front((source, path, offset + 100));
                         }
                     }
-                    Err(_) => {
+                    Err(e) => {
                         indexer.failed.insert(source.path.clone());
                         indexer.warnings.push(format!(
-                            "Unreadable or incomplete session: {}",
-                            paths::line(&path.to_string_lossy())
+                            "OpenCode source unavailable: {}",
+                            paths::line(&e.to_string())
                         ));
                     }
+                }
+            } else {
+                let previous = self.store.cursor(&path)?;
+                let recognized = previous.is_some() || pi::is_session(&path).unwrap_or(true);
+                let stat = fs::metadata(&path);
+                let unchanged = previous
+                    .as_ref()
+                    .zip(stat.as_ref().ok())
+                    .is_some_and(|(c, m)| {
+                        c.offset == m.len()
+                            && c.size == m.len()
+                            && c.inode == m.ino()
+                            && c.device == m.dev()
+                            && c.mtime == m.mtime() * 1_000_000_000 + m.mtime_nsec()
+                    });
+                if recognized && !unchanged {
+                    match pi::scan(&path, previous.as_ref()) {
+                        Ok((mut cursor, more)) => {
+                            if cursor.metadata.provider == Provider::Codex
+                                && let Some(name) = indexer
+                                    .names
+                                    .get(&source.path)
+                                    .and_then(|names| names.get(&cursor.metadata.native_id))
+                            {
+                                cursor.metadata.name = name.clone();
+                            }
+                            self.store.ingest(&source, &cursor)?;
+                            if more {
+                                indexer.queue.push_front((source, path, 0));
+                            }
+                        }
+                        Err(_) => {
+                            indexer.failed.insert(source.path.clone());
+                            indexer.warnings.push(format!(
+                                "Unreadable or incomplete session: {}",
+                                paths::line(&path.to_string_lossy())
+                            ));
+                        }
+                    }
+                } else if unchanged
+                    && let Some(mut cursor) = previous
+                    && cursor.metadata.provider == Provider::Codex
+                    && let Some(name) = indexer
+                        .names
+                        .get(&source.path)
+                        .and_then(|names| names.get(&cursor.metadata.native_id))
+                    && cursor.metadata.name != *name
+                {
+                    cursor.metadata.name = name.clone();
+                    self.store.ingest(&source, &cursor)?;
                 }
             }
         }
@@ -122,7 +188,12 @@ impl Service {
                 }
             }
             for session in self.store.list()? {
-                if !session.metadata.file.exists() {
+                if !session.metadata.source_file().exists()
+                    || session.metadata.database.as_ref().is_some_and(|db| {
+                        opencode::contains(db, &session.metadata.native_id)
+                            .is_ok_and(|present| !present)
+                    })
+                {
                     self.store.mark_missing(&session.metadata.file)?;
                 }
             }
@@ -182,7 +253,7 @@ impl Service {
                         .sources()?
                         .into_iter()
                         .find(|s| s.path == path)
-                        .context("sorgente mancante")?;
+                        .context("source is missing")?;
                     if let Ok((cursor, _)) = pi::scan(&path, None) {
                         self.store.ingest(&source, &cursor)?;
                     }
@@ -200,7 +271,8 @@ impl Service {
             session.bindings = bindings
                 .iter()
                 .filter(|b| {
-                    b.bridge.native_id == session.metadata.native_id
+                    session.metadata.provider == Provider::Pi
+                        && b.bridge.native_id == session.metadata.native_id
                         && b.bridge
                             .file
                             .as_ref()
@@ -237,10 +309,14 @@ impl Service {
                 });
             }
         }
-        let unbound = panes
+        // Every recognized agent without a verified binding stays visible.
+        // Pi-only consumers (associate_probable, project-source scan,
+        // unreported_pi, [~] hints) filter explicitly below; nothing here
+        // is Pi-specific anymore.
+        let mut unbound: Vec<tmux::PaneIdentity> = panes
             .into_iter()
             .filter(|p| {
-                p.provider == Some(Provider::Pi)
+                p.provider.is_some()
                     && !bindings.iter().any(|b| {
                         b.pane
                             .as_ref()
@@ -248,13 +324,14 @@ impl Service {
                     })
             })
             .collect();
-        let unbound: Vec<tmux::PaneIdentity> = unbound;
+        attach_activity(&mut unbound);
         if !unbound.is_empty() {
             for session in &mut sessions {
                 session.presence_verified = false;
             }
         }
         associate_probable(&mut sessions, &unbound);
+        append_live_panes(&mut sessions, &unbound);
         Ok(Catalog {
             sessions,
             unbound,
@@ -274,12 +351,17 @@ impl Service {
     ) -> Result<Conversation> {
         let session = self.store.resolve(target)?;
         ensure!(session.available, "conversation is unavailable");
-        let current = pi::header(&session.metadata.file)?;
+        let current = session_identity(&session.metadata)?;
         ensure!(
-            current.native_id == session.metadata.native_id,
+            current.native_id == session.metadata.native_id
+                && current.provider == session.metadata.provider,
             "session identity changed"
         );
-        pi::conversation_page(&session.metadata.file, leaf, tools, page)
+        if let Some(db) = &session.metadata.database {
+            opencode::conversation(db, &session.metadata.native_id, tools, page)
+        } else {
+            pi::conversation_page(&session.metadata.file, leaf, tools, page)
+        }
     }
     pub fn resolve<'a>(&self, catalog: &'a Catalog, target: &str) -> Result<&'a Session> {
         let matches = catalog
@@ -303,27 +385,37 @@ impl Service {
             session.probable.is_empty(),
             "Probable opening: pick the pane in the monitor instead of starting a possible duplicate"
         );
-        // Other unverified Pi processes must not prevent resuming unrelated
-        // work. The uncertainty is shown before an explicit confirmation.
-        let warning = if !catalog.unbound.is_empty() || !catalog.warnings.is_empty() {
-            "Some Pi runs are unidentified: another opening of this conversation cannot be ruled out.".into()
+        // Unidentified runs of the same provider require an explicit warning;
+        // unrelated providers cannot hold this conversation.
+        let provider_unbound = catalog
+            .unbound
+            .iter()
+            .any(|p| p.provider == Some(session.metadata.provider));
+        let warning = if provider_unbound || !catalog.warnings.is_empty() {
+            format!(
+                "Some {} runs are unidentified: another opening of this conversation cannot be ruled out.",
+                session.metadata.provider.label()
+            )
         } else {
             String::new()
         };
         ensure!(
-            session.available && session.metadata.file.is_file(),
+            session.available && session.metadata.source_file().is_file(),
             "session file is unavailable"
         );
         ensure!(
             Path::new(&session.metadata.cwd).is_dir(),
             "project directory is unavailable"
         );
+        let identity = session_identity(&session.metadata)?;
         ensure!(
-            pi::header(&session.metadata.file)?.native_id == session.metadata.native_id,
-            "Pi identity changed"
+            identity.native_id == session.metadata.native_id
+                && identity.provider == session.metadata.provider,
+            "session identity changed"
         );
         Ok(ResumeSpec {
-            file: session.metadata.file.clone(),
+            file: session.metadata.source_file().to_path_buf(),
+            provider: session.metadata.provider,
             cwd: session.metadata.cwd.clone(),
             title: session.metadata.title(),
             native_id: session.metadata.native_id.clone(),
@@ -331,6 +423,47 @@ impl Service {
         })
     }
 }
+/// Sample the live screen of unbound agent panes and attach the inferred
+/// activity (Herdr-style). Read-only `capture-pane` per pane, matched in
+/// memory and dropped; failures stay `None` (unsampled), never errors.
+/// Verified bindings are skipped upstream — integration wins over screen.
+fn attach_activity(panes: &mut [tmux::PaneIdentity]) {
+    for pane in panes.iter_mut() {
+        let Some(provider) = pane.provider else {
+            continue;
+        };
+        let Ok(raw) = tmux::capture_pane(&pane.socket, &pane.pane, 40) else {
+            continue;
+        };
+        let tail = paths::clean(&raw);
+        let (state, evidence) = activity::classify(provider, &pane.title, &tail);
+        pane.activity = Some(state);
+        pane.activity_evidence = Some(evidence);
+    }
+}
+
+/// Reattach ephemeral presence to fresh store rows between full catalog
+/// rebuilds. Bindings and verification are carried over by session id;
+/// store rows never hold live state. Returns the live-only (`live-*`)
+/// sessions so the caller can append them. Callers must still run
+/// `associate_probable` after this.
+pub fn reattach_presence(current: &mut [Session], previous: &[Session]) -> Vec<Session> {
+    let known: std::collections::HashMap<&str, &Session> =
+        previous.iter().map(|s| (s.id.as_str(), s)).collect();
+    for session in current.iter_mut() {
+        if let Some(old) = known.get(session.id.as_str()) {
+            session.bindings = old.bindings.clone();
+            session.presence_verified = old.presence_verified;
+            session.live_name();
+        }
+    }
+    previous
+        .iter()
+        .filter(|s| s.id.starts_with("live-"))
+        .cloned()
+        .collect()
+}
+
 /// Attach passive title/cwd hints. Exact unique matches only; duplicates
 /// stay unassociated and stored state is never changed.
 pub fn associate_probable(sessions: &mut [Session], panes: &[tmux::PaneIdentity]) {
@@ -355,13 +488,65 @@ pub fn associate_probable(sessions: &mut [Session], panes: &[tmux::PaneIdentity]
         let matches = sessions
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.available && s.metadata.cwd == cwd && s.metadata.name == name)
+            .filter(|(_, s)| {
+                s.available
+                    && s.metadata.provider == Provider::Pi
+                    && s.metadata.cwd == cwd
+                    && s.metadata.name == name
+            })
             .map(|(i, _)| i)
             .collect::<Vec<_>>();
         if matches.len() == 1 && sessions[matches[0]].bindings.is_empty() {
             sessions[matches[0]].probable.push(pane.clone());
         }
     }
+}
+/// Unidentified terminals are selectable rows, not hidden in leftover space.
+/// These rows are ephemeral and never inherit a saved conversation's decisions.
+pub fn append_live_panes(sessions: &mut Vec<Session>, panes: &[tmux::PaneIdentity]) {
+    for pane in panes {
+        if sessions.iter().any(|s| {
+            s.probable.iter().any(|p| {
+                tmux::socket_key(&p.socket) == tmux::socket_key(&pane.socket) && p.pane == pane.pane
+            })
+        }) {
+            continue;
+        }
+        let Some(provider) = pane.provider else {
+            continue;
+        };
+        sessions.push(Session {
+            id: format!("pane-{:x}-{}-{}-{:x}", pi::hash(tmux::socket_key(&pane.socket).as_bytes()), pane.pane, pane.client_pid, pi::hash(pane.client_start.as_bytes())),
+            metadata: Metadata { provider, cwd: paths::canonical(Path::new(&pane.cwd)).to_string_lossy().into_owned(),
+                name: paths::line(&pane.title), warning: "Live terminal; saved conversation identity is unverified. Enter focuses the pane without starting another agent.".into(), ..Default::default() },
+            state: ResumeState::History, note: String::new(), done_revision: 0, done_at: 0,
+            available: false, presence_verified: false, bindings: vec![], probable: vec![pane.clone()],
+        });
+    }
+}
+fn session_identity(meta: &Metadata) -> Result<Metadata> {
+    if let Some(db) = &meta.database {
+        opencode::identity(db, &meta.native_id)
+    } else {
+        pi::header(&meta.file)
+    }
+}
+fn other_sources() -> Vec<PathBuf> {
+    let home = paths::expand_home(Path::new("~"));
+    let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let codex = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
+    vec![
+        paths::canonical(&claude.join("projects")),
+        paths::canonical(&codex.join("sessions")),
+        paths::canonical(&data.join("opencode/opencode.db")),
+    ]
 }
 fn project_source(cwd: &Path) -> Option<PathBuf> {
     use std::io::Read;
@@ -381,28 +566,53 @@ fn project_source(cwd: &Path) -> Option<PathBuf> {
 #[derive(Debug, Clone)]
 pub struct ResumeSpec {
     pub file: PathBuf,
+    pub provider: Provider,
     pub cwd: String,
     pub title: String,
     pub native_id: String,
     pub warning: String,
 }
 impl ResumeSpec {
+    pub fn argv(&self) -> Vec<String> {
+        match self.provider {
+            Provider::Pi => vec![
+                "pi".into(),
+                "--session".into(),
+                self.file.to_string_lossy().into_owned(),
+            ],
+            Provider::Claude => vec!["claude".into(), "--resume".into(), self.native_id.clone()],
+            Provider::Codex => vec!["codex".into(), "resume".into(), self.native_id.clone()],
+            Provider::Opencode => vec![
+                "opencode".into(),
+                "--session".into(),
+                self.native_id.clone(),
+            ],
+        }
+    }
     pub fn launch(&self) -> Result<()> {
+        let identity = if self.provider == Provider::Opencode {
+            opencode::identity(&self.file, &self.native_id)?
+        } else {
+            pi::header(&self.file)?
+        };
         ensure!(
-            pi::header(&self.file)?.native_id == self.native_id,
-            "Pi identity changed before launch"
+            identity.provider == self.provider
+                && identity.native_id == self.native_id
+                && paths::canonical(Path::new(&identity.cwd))
+                    == paths::canonical(Path::new(&self.cwd)),
+            "session identity changed before launch"
         );
+        ensure!(self.file.to_str().is_some(), "session path is not UTF-8");
         ensure!(
             Path::new(&self.cwd).is_dir(),
             "project directory is unavailable"
         );
-        crate::tmux::resume(&self.file, Path::new(&self.cwd), &self.title)
+        crate::tmux::resume_command(&self.argv(), Path::new(&self.cwd), &self.title)
     }
     #[cfg(test)]
     fn launch_program(&self, program: &std::ffi::OsStr) -> Result<()> {
         let status = std::process::Command::new(program)
-            .arg("--session")
-            .arg(&self.file)
+            .args(self.argv().into_iter().skip(1))
             .current_dir(&self.cwd)
             .status()?;
         ensure!(status.success(), "Pi exited with an error");
@@ -459,6 +669,8 @@ mod tests {
             command: "pi".into(),
             title: title.into(),
             provider: Some(Provider::Pi),
+            activity: None,
+            activity_evidence: None,
         }
     }
     fn session() -> Session {
@@ -478,6 +690,28 @@ mod tests {
             bindings: vec![],
             probable: vec![],
         }
+    }
+    #[test]
+    fn non_pi_panes_stay_visible_while_pi_only_paths_ignore_them() {
+        // attach_activity shells out to tmux, so test the widening rule
+        // directly: any recognized agent without a binding is unbound.
+        let mut codex = pane("anything");
+        codex.provider = Some(Provider::Codex);
+        codex.command = "codex".into();
+        let unbound: Vec<_> = [pane("π - release-notes - project"), codex]
+            .into_iter()
+            .filter(|p| p.provider.is_some())
+            .collect();
+        assert_eq!(unbound.len(), 2);
+        // …while Pi-only consumers still filter explicitly.
+        let mut sessions = vec![session()];
+        associate_probable(&mut sessions, &unbound);
+        assert_eq!(sessions[0].probable.len(), 1);
+        // reattach_presence carries bindings like the old inline block.
+        let mut fresh = vec![session()];
+        let live = reattach_presence(&mut fresh, &sessions);
+        fresh.extend(live);
+        assert_eq!(fresh.len(), 1);
     }
     #[test]
     fn passive_titles_are_hints_and_duplicates_are_never_guessed() {
@@ -502,6 +736,114 @@ mod tests {
         assert_eq!(sessions[0].probable.len(), 2);
         associate_probable(&mut sessions, &[]);
         assert!(sessions[0].probable.is_empty());
+    }
+    #[test]
+    fn codex_title_refresh_preserves_notes_done_and_content_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("sessions");
+        fs::create_dir(&source).unwrap();
+        let file = source.join("rollout.jsonl");
+        let header = serde_json::json!({"type":"session_meta","payload":{"id":"native","cwd":dir.path(),"timestamp":"2026-01-01T00:00:00Z"}});
+        let msg = serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix tests"}]}});
+        fs::write(&file, format!("{header}\n{msg}\n")).unwrap();
+        let titles = dir.path().join("session_index.jsonl");
+        fs::write(
+            &titles,
+            "{\"id\":\"native\",\"thread_name\":\"Test repair\"}\n",
+        )
+        .unwrap();
+        let root = dir.path().join("state");
+        let store = Store::open(&root).unwrap();
+        store.add_source(&source).unwrap();
+        let service = Service { root, store };
+        assert!(service.sync().unwrap().is_empty());
+        service
+            .store
+            .change("native", Some(ResumeState::Done), Some("Keep this note"))
+            .unwrap();
+        let before = service.store.resolve("native").unwrap();
+        assert_eq!(before.metadata.title(), "Test repair");
+        fs::write(
+            &titles,
+            "{\"id\":\"native\",\"thread_name\":\"Renamed test repair\"}\n",
+        )
+        .unwrap();
+        assert!(service.sync().unwrap().is_empty());
+        let after = service.store.resolve("native").unwrap();
+        assert_eq!(after.metadata.title(), "Renamed test repair");
+        assert_eq!(after.metadata.revision, before.metadata.revision);
+        assert_eq!(after.state, ResumeState::Done);
+        assert_eq!(after.note, "Keep this note");
+        assert!(!after.changed_after_done());
+    }
+    #[test]
+    fn every_unidentified_provider_is_a_searchable_ephemeral_row() {
+        let providers = [
+            Provider::Pi,
+            Provider::Claude,
+            Provider::Codex,
+            Provider::Opencode,
+        ];
+        let panes = providers
+            .iter()
+            .enumerate()
+            .map(|(i, provider)| {
+                let mut p = pane(provider.label());
+                p.provider = Some(*provider);
+                p.pane = format!("%{i}");
+                p.client_pid = i as u32;
+                p
+            })
+            .collect::<Vec<_>>();
+        let mut rows = vec![session()];
+        append_live_panes(&mut rows, &panes);
+        assert_eq!(rows.len(), 5);
+        append_live_panes(&mut rows, &panes);
+        assert_eq!(rows.len(), 5);
+        assert!(
+            rows.iter()
+                .skip(1)
+                .all(|s| s.id.starts_with("pane-") && !s.available && View::Open.matches(s))
+        );
+        let mut app = crate::ui::App {
+            catalog: Catalog {
+                sessions: rows,
+                ..Default::default()
+            },
+            search: "claude".into(),
+            ..Default::default()
+        };
+        app.refresh_filter();
+        assert_eq!(app.rows().len(), 1);
+        assert_eq!(app.rows()[0].metadata.provider, Provider::Claude);
+        // Live-only rows vanish on a store refresh unless their pane still exists.
+        let mut saved = vec![session()];
+        assert!(reattach_presence(&mut saved, &app.catalog.sessions).is_empty());
+    }
+    #[test]
+    fn resume_arguments_use_the_correct_provider_and_exact_identity() {
+        for (provider, expected) in [
+            (
+                Provider::Pi,
+                vec!["pi", "--session", "/tmp/session with spaces;$.jsonl"],
+            ),
+            (Provider::Claude, vec!["claude", "--resume", "native-id"]),
+            (Provider::Codex, vec!["codex", "resume", "native-id"]),
+            (
+                Provider::Opencode,
+                vec!["opencode", "--session", "native-id"],
+            ),
+        ] {
+            let spec = ResumeSpec {
+                provider,
+                file: "/tmp/session with spaces;$.jsonl".into(),
+                cwd: "/tmp".into(),
+                title: "name".into(),
+                native_id: "native-id".into(),
+                warning: String::new(),
+            };
+            assert_eq!(spec.argv(), expected);
+        }
     }
     #[test]
     fn project_settings_find_custom_storage_without_an_extension() {
@@ -530,6 +872,7 @@ mod tests {
         .unwrap();
         let spec = ResumeSpec {
             file,
+            provider: Provider::Pi,
             cwd: dir.path().to_string_lossy().into_owned(),
             title: "original".into(),
             native_id: "original".into(),
@@ -539,7 +882,7 @@ mod tests {
             spec.launch()
                 .unwrap_err()
                 .to_string()
-                .contains("Pi identity changed")
+                .contains("session identity changed")
         );
     }
     #[test]
@@ -558,6 +901,7 @@ mod tests {
         let file = cwd.join("session; name.jsonl");
         let spec = ResumeSpec {
             file: file.clone(),
+            provider: Provider::Pi,
             cwd: cwd.to_string_lossy().into(),
             title: "Synthetic session".into(),
             native_id: String::new(),

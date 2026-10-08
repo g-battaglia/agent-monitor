@@ -8,14 +8,14 @@
 │                       ╭ Project commands ────────────────────────────────────────────────────╮                       │
 │                       │ All projects                                                         │                       │
 ╰───────────────────────│                                                                      │                       │
-╭ All · 5 ──────────────│  Trova                                                               │                       │
+╭ All · 5 ──────────────│  Find                                                                │                       │
 │›     [R] Acme Website │  Search projects                                           /         │                       │
 │      [R] Acme Website │  Project                                                             │                       │
 │      [R] Acme Website │  Open the selected project                                 Enter     │                       │
 │      [R] Acme Website │  Navigate                                                            │                       │
 │      [R] Acme Website │  Change view                                               f         │                       │
 │                       │  Pick another project                                      p         │                       │
-│                       │  Browse open Pi runs                                       o         │                       │
+│                       │  Browse open agent runs                                    o         │                       │
 │                       │  Move to the next panel                                    Tab       │                       │
 │                       │  Catalog                                                             │                       │
 │                       │› Refresh the catalog                                       R         │                       │

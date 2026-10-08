@@ -117,13 +117,8 @@ fn run(
         .ok()
         .flatten()
         .filter(|p| !p.is_empty());
-    let view = service
-        .store
-        .preference("explorer_view")
-        .ok()
-        .flatten()
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or(View::All);
+    // Start with every saved session and live pane, not a stale Open filter.
+    let view = View::All;
     if replies.send(Reply::Preferences { project, view }).is_err() {
         return;
     }
@@ -267,26 +262,34 @@ fn run(
         }
         if last_catalog.elapsed() >= Duration::from_millis(200) {
             if let Ok(mut sessions) = service.store.list() {
-                let previous = catalog
-                    .sessions
+                let live = crate::service::reattach_presence(&mut sessions, &catalog.sessions);
+                sessions.extend(live);
+                // Preserve screen activity across store refreshes, keyed by
+                // socket+pane (store rows never hold live state).
+                let activity: std::collections::HashMap<_, _> = catalog
+                    .unbound
                     .iter()
-                    .map(|s| (s.id.as_str(), s))
-                    .collect::<std::collections::HashMap<_, _>>();
-                for session in &mut sessions {
-                    if let Some(previous) = previous.get(session.id.as_str()) {
-                        session.bindings = previous.bindings.clone();
-                        session.presence_verified = previous.presence_verified;
-                        session.live_name();
+                    .map(|p| {
+                        (
+                            (crate::tmux::socket_key(&p.socket), p.pane.clone()),
+                            (p.activity, p.activity_evidence.clone()),
+                        )
+                    })
+                    .collect();
+                // Full presence (with fresh captures) refreshes on the 2 s
+                // tick via catalog(); between ticks, keep showing the last
+                // sampled activity instead of flickering to unsampled.
+                for pane in &mut catalog.unbound {
+                    if pane.activity.is_none()
+                        && let Some((state, evidence)) = activity
+                            .get(&(crate::tmux::socket_key(&pane.socket), pane.pane.clone()))
+                    {
+                        pane.activity = *state;
+                        pane.activity_evidence = evidence.clone();
                     }
                 }
-                sessions.extend(
-                    catalog
-                        .sessions
-                        .iter()
-                        .filter(|s| s.id.starts_with("live-"))
-                        .cloned(),
-                );
                 crate::service::associate_probable(&mut sessions, &catalog.unbound);
+                crate::service::append_live_panes(&mut sessions, &catalog.unbound);
                 catalog.sessions = sessions;
             }
             catalog.scanning = indexer.as_ref().is_some_and(|i| i.initial && i.pending());

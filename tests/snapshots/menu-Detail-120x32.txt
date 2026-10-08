@@ -9,11 +9,11 @@
 │                       │  Edit the next step                                        n         │                       │
 ╰───────────────────────│  Mark as done                                              d         │                       │
 ╭ All · 5 ──────────────│  Mark to resume                                            r         │                       │
-│›   [R] Acme Website / │  Undo the last change                                      u         │                       │
-│    [R] Acme Website / │  Show file info                                            i         │                       │
-│    [R] Acme Website / │  Reading                                                             │                       │
-│    [R] Acme Website / │  Expand the conversation                                   z         │                       │
-│    [R] Acme Website / │  Choose a conversation branch                              b         │                       │
+│›     [R] Acme Website │  Undo the last change                                      u         │                       │
+│      [R] Acme Website │  Show file info                                            i         │                       │
+│      [R] Acme Website │  Reading                                                             │                       │
+│      [R] Acme Website │  Expand the conversation                                   z         │                       │
+│      [R] Acme Website │  Choose a conversation branch                              b         │                       │
 │                       │  Show or hide tools                                        t         │                       │
 │                       │  Read the older page                                       [         │                       │
 │                       │  Read the newer page                                       ]         │                       │

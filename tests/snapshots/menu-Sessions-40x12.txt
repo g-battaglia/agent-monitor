@@ -2,11 +2,11 @@
 │N╭ Session commands ────────────────╮ │
 ╰─│ Acme Website / website-redesign  │─╯
 ╭ │                                  │─╮
-│›│  Move to the next panelTab       │g│
-│ │  Catalog                         │ │
-│ │› Refresh the catalog   R         │w│
+│›│  Move to the next panelTab       │s│
+│ │  Catalog                         │n│
+│ │› Refresh the catalog   R         │l│
 │ │ Re-read names, conversations,    │ │
-│ │ and openings without starting    │ │
+│ │ and openings without starting    │s│
 ╰─│ ↑↓ choose   Enter run   Esc clos │─╯
 r ╰──────────────────────────────────╯  
                                         

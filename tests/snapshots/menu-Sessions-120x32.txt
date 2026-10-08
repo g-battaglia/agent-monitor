@@ -9,11 +9,11 @@
 │                       │  Search sessions                                           /         │                       │
 ╰───────────────────────│  Session                                                             │                       │
 ╭ All · 5 ──────────────│  Go to Pi or resume the work                               Enter     │                       │
-│›   [R] Acme Website / │  Edit the next step                                        n         │                       │
-│    [R] Acme Website / │  Mark as done                                              d         │                       │
-│    [R] Acme Website / │  Mark to resume                                            r         │                       │
-│    [R] Acme Website / │  Undo the last change                                      u         │                       │
-│    [R] Acme Website / │  Show file info                                            i         │                       │
+│›     [R] Acme Website │  Edit the next step                                        n         │                       │
+│      [R] Acme Website │  Mark as done                                              d         │                       │
+│      [R] Acme Website │  Mark to resume                                            r         │                       │
+│      [R] Acme Website │  Undo the last change                                      u         │                       │
+│      [R] Acme Website │  Show file info                                            i         │                       │
 │                       │  Navigate                                                            │                       │
 │                       │  Change view                                               f         │                       │
 │                       │  Pick another project                                      p         │                       │

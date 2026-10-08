@@ -375,12 +375,15 @@ fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
             .skip(offset)
             .take(height)
             .map(|s| {
+                // Badges, not symbols: [O] means a verified open pane,
+                // [~] a probable title/folder hint. Same visual language
+                // as [R], readable without color and without a legend hunt.
                 let mark = if !s.bindings.is_empty() {
-                    "● "
+                    "[O] "
                 } else if !s.probable.is_empty() {
-                    "≈ "
+                    "[~] "
                 } else {
-                    "  "
+                    "    "
                 };
                 let label = if app.project.is_none() {
                     format!(
@@ -502,7 +505,7 @@ fn detail(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     if !session.probable.is_empty() {
         lines.push(Line::styled(
             format!(
-                "≈ {} probable pane(s) · Enter to choose",
+                "[~] {} probable pane(s) · Enter to choose",
                 session.probable.len()
             ),
             Style::new().fg(theme.warning),
@@ -682,6 +685,77 @@ mod tests {
         app
     }
     #[test]
+    fn open_and_probable_badges_use_brackets_like_resume() {
+        use crate::model::{ResumeState, View};
+        let mut app = fixture();
+        app.project = Some("/repo/acme-website".into());
+        app.view = View::All;
+        for session in &mut app.catalog.sessions {
+            session.state = ResumeState::History;
+        }
+        // A verified binding renders [O]; a passive hint renders [~].
+        // Neither depends on color, and neither looks like [R].
+        app.catalog.sessions[1].bindings = vec![Binding {
+            bridge: Bridge {
+                version: 1,
+                nonce: "n".into(),
+                generation: 1,
+                pid: 1,
+                process_start: "start".into(),
+                native_id: "native".into(),
+                file: None,
+                cwd: "/repo/acme-website".into(),
+                name: "api-migration".into(),
+                leaf: None,
+                socket: None,
+                pane: None,
+                seen: 0,
+            },
+            record: std::path::PathBuf::from("/tmp/record.json"),
+            pane: None,
+        }];
+        app.catalog.sessions[2].probable = vec![crate::tmux::PaneIdentity {
+            socket: "/fake/socket".into(),
+            server: "1".into(),
+            pane: "%1".into(),
+            pane_pid: 1,
+            pane_start: "start".into(),
+            client_pid: 2,
+            client_start: "start".into(),
+            target: "project:1.0".into(),
+            session: "project".into(),
+            window: "1".into(),
+            cwd: "/repo/acme-website".into(),
+            command: "pi".into(),
+            title: "hint".into(),
+            provider: Some(Provider::Pi),
+        }];
+        app.no_color = true;
+        app.refresh_filter();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        let open_row = text
+            .lines()
+            .find(|line| line.contains("api-migration"))
+            .unwrap();
+        let probable_row = text
+            .lines()
+            .find(|line| line.contains("onboarding-flow"))
+            .unwrap();
+        assert!(open_row.contains("[O]"));
+        assert!(!open_row.contains("[R]"));
+        assert!(probable_row.contains("[~]"));
+        assert!(!probable_row.contains("[R]"));
+        assert!(!text.contains('●') && !text.contains('≈'));
+    }
+    #[test]
     fn resume_badge_is_independent_of_presence_and_visible_without_color() {
         use crate::model::{ResumeState, View};
         let mut app = fixture();
@@ -707,7 +781,7 @@ mod tests {
                 .find(|line| line.contains("website-redesign") && line.contains(badge))
                 .unwrap();
             assert!(row.contains(badge));
-            assert!(!row.contains('≈') && !row.contains('●'));
+            assert!(!row.contains("[~]") && !row.contains("[O]"));
             for name in ["release-notes", "api-migration"] {
                 assert!(
                     !lines

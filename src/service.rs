@@ -191,7 +191,8 @@ impl Service {
             }
         }
         if tmux::unreported_pi(&bindings.iter().map(|b| b.bridge.pid).collect::<Vec<_>>())? > 0 {
-            warnings.push("Some Pi runs have no extension: probable openings are marked ≈".into());
+            warnings
+                .push("Some Pi runs have no extension: probable openings are marked [~]".into());
         }
         let mut sessions = self.store.list()?;
         for session in &mut sessions {

@@ -9,11 +9,11 @@
 │                                                              ││Next step                                                                                     │
 ╰──────────────────────────────────────────────────────────────╯│Check the hero spacing in a real browser.                                                     │
 ╭ All · 5 ─────────────────────────────────────────────────────╮│                                                                                              │
-│›   [R] Acme Website / website-redesign                       ││Latest saved branch                                                                           │
-│    [R] Acme Website / api-migration                          ││                                                                                              │
-│    [R] Acme Website / onboarding-flow                        ││You  —                                                                                        │
-│    [R] Acme Website / perf-audit                             ││Check the new landing copy.                                                                   │
-│    [R] Acme Website / release-notes                          ││                                                                                              │
+│›     [R] Acme Website / website-redesign                     ││Latest saved branch                                                                           │
+│      [R] Acme Website / api-migration                        ││                                                                                              │
+│      [R] Acme Website / onboarding-flow                      ││You  —                                                                                        │
+│      [R] Acme Website / perf-audit                           ││Check the new landing copy.                                                                   │
+│      [R] Acme Website / release-notes                        ││                                                                                              │
 │                                                              ││Pi  —                                                                                         │
 │                                                              ││The draft is ready for review.                                                                │
 │                                                              ││Mobile spacing still needs checking.                                                          │

@@ -35,8 +35,8 @@ indexing and an optional presence extension), Claude, Codex, and Opencode
 - **Resume-oriented workflow.** Sessions carry an explicit state — history,
   to-resume, or done — plus a short next-step note. States are user
   decisions; activity or idleness never changes them implicitly.
-- **Live pane awareness.** Verified extension records (`●`) and passive
-  title/folder hints (`≈`) distinguish proven openings from guesses.
+- **Live pane awareness.** Verified extension records (`[O]`) and passive
+  title/folder hints (`[~]`) distinguish proven openings from guesses.
   Duplicate names are never associated arbitrarily.
 - **Safe resume.** Reopening a closed session uses exact argv
   (`<agent> --session <file>`) in the project directory, preferring a new
@@ -121,7 +121,7 @@ in scripts) and revalidates identity, folder, and presence before launch.
 ## Optional presence extension
 
 Pane matching works without installation (exact title + folder ⇒ probable
-`≈`). For proven identity (`●`), including across in-process session
+`[~]`). For proven identity (`[O]`), including across in-process session
 switches, install the bundled Pi extension:
 
 ```sh

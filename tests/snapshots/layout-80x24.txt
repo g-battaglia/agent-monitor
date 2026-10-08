@@ -2,11 +2,11 @@
 │Name, project, or note…  / or Ctrl-f                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭ All · 5 ─────────────────────╮╭ Acme Website / website-redesign ─────────────╮
-│›   [R] Acme Website / website││To resume    Presence unverified              │
-│    [R] Acme Website / api-mig││Acme Website                                  │
-│    [R] Acme Website / onboard││Last exchange: —                              │
-│    [R] Acme Website / perf-au││                                              │
-│    [R] Acme Website / release││Next step                                     │
+│›     [R] Acme Website / websi││To resume    Presence unverified              │
+│      [R] Acme Website / api-m││Acme Website                                  │
+│      [R] Acme Website / onboa││Last exchange: —                              │
+│      [R] Acme Website / perf-││                                              │
+│      [R] Acme Website / relea││Next step                                     │
 │                              ││Check the hero spacing in a real browser.     │
 │                              ││                                              │
 │                              ││Latest saved branch                           │

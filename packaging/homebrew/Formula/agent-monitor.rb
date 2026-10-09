@@ -1,5 +1,5 @@
 class AgentMonitor < Formula
-  desc "Independent tmux monitor and session explorer for coding agents"
+  desc "Terminal monitor for Claude Code, Codex, OpenCode and Pi via tmux"
   homepage "https://github.com/g-battaglia/agent-monitor"
   license "MIT"
   head "https://github.com/g-battaglia/agent-monitor.git", branch: "main"

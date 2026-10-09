@@ -1,0 +1,12 @@
+╭ Search projects ─────────────────────╮
+│Name or folder…  / or Ctrl-f          │
+╰──────────────────────────────────────╯
+╭ Projects · Tree · Recent ────────────╮
+│› All projects  8                     │
+│  ▾ Repo/                            8│
+│  ├─ Tooling                         1│
+│  └─ ▾ Acme Website                  5│
+│     └─ ▾ Api                        1│
+╰ /repo ───────────────────────────────╯
+Space fold  v layout  s sort  ? actions
+Project order: Recent · latest saved upd

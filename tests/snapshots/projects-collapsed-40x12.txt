@@ -1,0 +1,12 @@
+╭ Search projects ─────────────────────╮
+│Name or folder…  / or Ctrl-f          │
+╰──────────────────────────────────────╯
+╭ Projects · Tree · A–Z ───────────────╮
+│› All projects  8                     │
+│  ▸ Repo/ (4 hidden)                 8│
+│                                      │
+│                                      │
+│                                      │
+╰ /repo ───────────────────────────────╯
+Space fold  v layout  s sort  ? actions
+All project branches collapsed

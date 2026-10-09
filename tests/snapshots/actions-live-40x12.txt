@@ -1,12 +1,12 @@
 ╭ Search sessions ─────────────────────╮
 │N╭ Session actions ─────────────────╮ │
-╰─│ [pi] To resume · Acme Website    │─╯
-╭ │ Catalog ←→/Tab 5/5               │─╮
-│›│ › Refresh catalog           [R]  │s│
-│ │                                  │n│
+╰─│ [claude] Live terminal · Acme W… │─╯
+╭ │ Session ←→/Tab 2/5               │─╮
+│›│   Focus live terminal   [Enter]  │b│
+│ │ › – Edit next-step note     [n]  │n│
 │ │ ──────────────────────────────── │l│
-│ │ Re-read names, conversations,    │ │
-│ │ and openings without starting    │s│
+│ │ Saved session required for notes │ │
+│ │ and decisions.                   │s│
 ╰─│ Tab groups  ↑↓ move  ↵ run  Esc  │─╯
 r ╰──────────────────────────────────╯
 

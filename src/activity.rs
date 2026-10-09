@@ -1,66 +1,56 @@
-//! Plugin-free agent activity from terminal screens (Herdr-style).
-//!
-//! For each tmux pane running a recognized agent *without* a verified
-//! extension binding, the worker captures the live bottom of the pane
-//! (`tmux capture-pane`, read-only) and matches it against a small ordered
-//! rule manifest. The result is `working | idle | blocked | unknown`.
-//!
-//! This is inference from visible text, not proof. Rules are fixed
-//! substrings (no model, no regex crate). `blocked` is deliberately
-//! strict: only known approval/question markers count. Anything unmatched
-//! falls back per Herdr: `idle` for known agents, `unknown` for Codex
-//! without a title signal.
-//!
-//! Manifests are bundled TOML (`assets/activity/<agent>.toml`, embedded
-//! with `include_str!`) with optional local overrides in
-//! `~/.config/agent-monitor/agent-detection/<agent>.toml`. Overrides win;
-//! invalid files are ignored with a warning. No network fetches, ever.
-//!
-//! Captured screen text is matched in memory and dropped: never logged,
-//! never persisted. Activity is ephemeral per presence tick.
-
+//! Local, read-only terminal inference inspired by Herdr's detector.
+//! Snapshot rules are scoped to current terminal UI; finished requires an
+//! observed working → settled idle transition. This never changes durable Done.
 use crate::{model::Provider, paths};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+    path::PathBuf,
+};
 
-/// Inferred pane activity. `Unknown` is a normal outcome, not an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentActivity {
     Working,
+    Finished,
     Idle,
     Blocked,
+    Waiting,
+    Error,
     Unknown,
+    Mixed,
 }
-
 impl AgentActivity {
-    /// Lowercase state word for display, Herdr-style.
     pub fn label(self) -> &'static str {
         match self {
             Self::Working => "working",
+            Self::Finished => "finished",
             Self::Idle => "idle",
             Self::Blocked => "blocked",
+            Self::Waiting => "waiting",
+            Self::Error => "error",
             Self::Unknown => "unknown",
+            Self::Mixed => "mixed",
         }
     }
 }
-
-/// Why a classification came out the way it did. Travels with the result
-/// so `agent explain` (and the detail line) can show provenance instead of
-/// asking the user to trust a guess.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MatchEvidence {
-    /// Rule id that matched, or empty on fallback.
     pub rule_id: String,
-    /// `bundled` or `override`.
     pub manifest_source: String,
     pub manifest_version: u64,
-    /// Set when no rule matched (e.g. `default_known_agent_idle_fallback`).
     pub fallback_reason: String,
-    /// Whether the terminal title contributed a signal (Codex only).
     pub title_signal: bool,
+    #[serde(default)]
+    pub transition: String,
+    #[serde(default)]
+    pub observations: u8,
+    #[serde(default)]
+    pub sampled_at: i64,
+    #[serde(default)]
+    pub warning: String,
 }
-
 #[derive(Debug, Deserialize)]
 struct Manifest {
     #[serde(default)]
@@ -68,36 +58,42 @@ struct Manifest {
     #[serde(default)]
     rule: Vec<Rule>,
 }
-
 #[derive(Debug, Deserialize)]
 struct Rule {
     id: String,
     state: AgentActivity,
     #[serde(default)]
+    priority: u16,
+    #[serde(default)]
     title_any: Vec<String>,
     #[serde(default)]
+    title_spinner: bool,
+    #[serde(default)]
     screen_any: Vec<String>,
-    /// All must appear somewhere in the tail.
     #[serde(default)]
     screen_all: Vec<String>,
-    /// None may appear in the tail.
     #[serde(default)]
     screen_none: Vec<String>,
-    /// Only the last N lines count for this rule (0 = whole tail).
+    /// When present, screen_any must match on the SAME prefixed line.
+    #[serde(default)]
+    line_starts_any: Vec<String>,
     #[serde(default)]
     bottom_lines: usize,
+    #[serde(default)]
+    bottom_non_empty_lines: usize,
+    #[serde(default)]
+    case_insensitive: bool,
+    /// Discard older output before the latest non-menu composer/prompt.
+    #[serde(default)]
+    after_prompt: bool,
+    #[serde(default)]
+    no_later_response: bool,
 }
-
 const CODEX: &str = include_str!("../assets/activity/codex.toml");
 const CLAUDE: &str = include_str!("../assets/activity/claude.toml");
 const OPENCODE: &str = include_str!("../assets/activity/opencode.toml");
 const PI: &str = include_str!("../assets/activity/pi.toml");
-
-/// Spinner/activity glyphs some agents put in the tmux pane title.
-const SPINNER_GLYPHS: &[char] = &[
-    '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '◐', '◓', '◑', '◒', '…',
-];
-
+const MAX_MANIFEST: u64 = 128 * 1024;
 fn bundled(provider: Provider) -> (&'static str, &'static str) {
     match provider {
         Provider::Codex => (CODEX, "codex"),
@@ -106,223 +102,316 @@ fn bundled(provider: Provider) -> (&'static str, &'static str) {
         Provider::Pi => (PI, "pi"),
     }
 }
-
-/// Load the active manifest: local override wins, bundled is the fallback.
-/// An invalid override is ignored (warning returned) — never fatal.
-fn load(provider: Provider) -> (Manifest, String, u64, Option<String>) {
-    let (text, name) = bundled(provider);
-    if let Some(path) = override_path(name)
-        && let Ok(raw) = std::fs::read_to_string(&path)
-    {
-        match toml::from_str::<Manifest>(&raw) {
-            Ok(manifest) => {
-                let version = manifest.manifest_version;
-                return (manifest, "override".into(), version, None);
-            }
-            Err(e) => {
-                let fallback = bundled_manifest(text);
-                let version = fallback.manifest_version;
+fn parse(raw: &str) -> Result<Manifest, String> {
+    if raw.len() > MAX_MANIFEST as usize {
+        return Err("manifest exceeds 128 KiB".into());
+    }
+    let manifest =
+        toml::from_str::<Manifest>(raw).map_err(|_| "invalid manifest TOML".to_string())?;
+    if manifest.rule.len() > 128 {
+        return Err("too many detection rules".into());
+    }
+    for r in &manifest.rule {
+        if matches!(r.state, AgentActivity::Finished | AgentActivity::Mixed) {
+            return Err("finished and mixed are derived states, not snapshot rules".into());
+        }
+        let strings = r
+            .title_any
+            .iter()
+            .chain(&r.screen_any)
+            .chain(&r.screen_all)
+            .chain(&r.screen_none)
+            .chain(&r.line_starts_any);
+        if r.id.len() > 128
+            || strings.clone().count() > 128
+            || strings.clone().any(|s| s.is_empty() || s.len() > 512)
+        {
+            return Err("invalid detection pattern size".into());
+        }
+        if !r.title_spinner && strings.count() == 0 {
+            return Err("detection rule has no predicates".into());
+        }
+    }
+    Ok(manifest)
+}
+fn load(provider: Provider, injected: Option<&str>) -> (Manifest, String, String) {
+    let (default, name) = bundled(provider);
+    let raw = injected.map(str::to_owned).or_else(|| {
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let dir = home.join(".config/agent-monitor/agent-detection");
+        if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            return None;
+        }
+        let path = dir.join(format!("{name}.toml"));
+        let meta = std::fs::symlink_metadata(&path).ok()?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return None;
+        }
+        let file = std::fs::File::open(path).ok()?;
+        let mut raw = String::new();
+        file.take(MAX_MANIFEST + 1).read_to_string(&mut raw).ok()?;
+        Some(raw)
+    });
+    if let Some(raw) = raw {
+        match parse(&raw) {
+            Ok(manifest) => return (manifest, "override".into(), String::new()),
+            Err(warning) => {
                 return (
-                    fallback,
+                    parse(default).expect("bundled manifest"),
                     "bundled".into(),
-                    version,
-                    Some(format!(
-                        "Ignoring invalid override {}: {}",
-                        path.display(),
-                        paths::line(&e.to_string())
-                    )),
+                    warning,
                 );
             }
         }
     }
-    let manifest = bundled_manifest(text);
-    let version = manifest.manifest_version;
-    (manifest, "bundled".into(), version, None)
+    (
+        parse(default).expect("bundled manifest"),
+        "bundled".into(),
+        String::new(),
+    )
 }
-
-fn bundled_manifest(text: &str) -> Manifest {
-    toml::from_str(text).expect("bundled activity manifest must parse")
+fn spinner(title: &str) -> bool {
+    title.trim_start().chars().next().is_some_and(|c| {
+        ('\u{2801}'..='\u{28ff}').contains(&c) || matches!(c, '◐' | '◓' | '◑' | '◒')
+    })
 }
-
-/// Local override path, if the file exists. Parent dirs are created 0700;
-/// symlinks are refused; missing file means "no override".
-fn override_path(agent: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let dir = home.join(".config/agent-monitor/agent-detection");
-    std::fs::create_dir_all(&dir).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
-    let path = dir.join(format!("{agent}.toml"));
-    if path.is_file() && !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink())
-    {
-        Some(path)
-    } else {
-        None
-    }
+fn prompt(line: &str, provider: Provider) -> bool {
+    let line = line.trim_start();
+    let marker = match provider {
+        Provider::Claude => '❯',
+        Provider::Codex => '›',
+        Provider::Pi => '>',
+        Provider::Opencode => '>',
+    };
+    let Some(rest) = line.strip_prefix(marker) else {
+        return false;
+    };
+    // Numbered choices are permission menus, not a new composer.
+    !rest
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit())
 }
-
-/// Classify one pane snapshot. `title` is the tmux pane title (Codex
-/// spinner signal); `tail` is the sanitized `capture-pane` output.
-/// Pure function: no I/O except the manifest load, fully testable.
 pub fn classify(provider: Provider, title: &str, tail: &str) -> (AgentActivity, MatchEvidence) {
     classify_with_override(provider, title, tail, None)
 }
-
-/// Same as `classify` with an injectable manifest TOML for tests and
-/// `agent explain --file`. `None` loads the active manifest.
 pub fn classify_with_override(
     provider: Provider,
     title: &str,
     tail: &str,
-    manifest_toml: Option<&str>,
+    injected: Option<&str>,
 ) -> (AgentActivity, MatchEvidence) {
-    let (manifest, source, version, warning) = match manifest_toml {
-        Some(raw) => match toml::from_str::<Manifest>(raw) {
-            Ok(manifest) => {
-                let version = manifest.manifest_version;
-                (manifest, "override".to_string(), version, None)
-            }
-            Err(e) => {
-                let (text, _) = bundled(provider);
-                let fallback = bundled_manifest(text);
-                let version = fallback.manifest_version;
-                (
-                    fallback,
-                    "bundled".to_string(),
-                    version,
-                    Some(format!("invalid manifest: {}", paths::line(&e.to_string()))),
-                )
-            }
-        },
-        None => load(provider),
+    let (manifest, source, warning) = load(provider, injected);
+    let mut evidence = MatchEvidence {
+        manifest_source: source,
+        manifest_version: manifest.manifest_version,
+        warning,
+        ..Default::default()
     };
-    let _ = warning;
-
-    let bottom = |n: usize| -> &str {
-        if n == 0 {
-            return tail;
-        }
-        let lines: Vec<&str> = tail.lines().collect();
-        let start = lines.len().saturating_sub(n);
-        let offset: usize = lines[..start].iter().map(|l| l.len() + 1).sum();
-        &tail[offset.min(tail.len())..]
-    };
-
-    let title_hit = |needles: &[String]| needles.iter().any(|n| title.contains(n.as_str()));
-
-    for rule in &manifest.rule {
-        if !rule.title_any.is_empty() && !title_hit(&rule.title_any) {
+    let clean = paths::clean(tail);
+    let title = paths::line(title);
+    let mut rules = manifest.rule.iter().enumerate().collect::<Vec<_>>();
+    rules.sort_by_key(|(i, r)| (std::cmp::Reverse(r.priority), *i));
+    for (_, rule) in rules {
+        if rule.title_spinner && !spinner(&title) {
             continue;
         }
-        let scope = bottom(rule.bottom_lines);
-        if !rule.screen_any.is_empty()
-            && !rule.screen_any.iter().any(|n| scope.contains(n.as_str()))
+        let normalize = |s: &str| {
+            if rule.case_insensitive {
+                s.to_lowercase()
+            } else {
+                s.to_owned()
+            }
+        };
+        if !rule.title_any.is_empty()
+            && !rule
+                .title_any
+                .iter()
+                .any(|n| normalize(&title).contains(&normalize(n)))
         {
             continue;
         }
-        if !rule.screen_all.iter().all(|n| scope.contains(n.as_str())) {
+        let mut lines = clean.lines().collect::<Vec<_>>();
+        if rule.after_prompt
+            && let Some(i) = lines.iter().rposition(|s| prompt(s, provider))
+        {
+            lines = lines[i..].to_vec();
+        }
+        if rule.bottom_non_empty_lines > 0 {
+            lines.retain(|l| !l.trim().is_empty());
+            let first = lines.len().saturating_sub(rule.bottom_non_empty_lines);
+            lines = lines[first..].to_vec();
+        } else if rule.bottom_lines > 0 {
+            let first = lines.len().saturating_sub(rule.bottom_lines);
+            lines = lines[first..].to_vec();
+        }
+        let scope = normalize(&lines.join("\n"));
+        if !rule
+            .screen_all
+            .iter()
+            .all(|n| scope.contains(&normalize(n)))
+            || rule
+                .screen_none
+                .iter()
+                .any(|n| scope.contains(&normalize(n)))
+        {
             continue;
         }
-        if rule.screen_none.iter().any(|n| scope.contains(n.as_str())) {
+        let any = |s: &str| {
+            rule.screen_any.is_empty() || rule.screen_any.iter().any(|n| s.contains(&normalize(n)))
+        };
+        if rule.line_starts_any.is_empty() {
+            if !any(&scope) {
+                continue;
+            }
+        } else if !lines.iter().enumerate().any(|(index, line)| {
+            if rule.no_later_response
+                && lines[index + 1..].iter().any(|l| {
+                    let l = l.trim_start();
+                    match provider {
+                        Provider::Codex => l.starts_with(['•', '■', '✓', '✗']),
+                        Provider::Claude => l.starts_with('⏺'),
+                        _ => false,
+                    }
+                })
+            {
+                return false;
+            }
+            let line = normalize(line.trim_start_matches([' ', '─', '│']));
+            rule.line_starts_any
+                .iter()
+                .any(|p| line.starts_with(&normalize(p)))
+                && any(&line)
+        }) {
             continue;
         }
-        return (
-            rule.state,
-            MatchEvidence {
-                rule_id: rule.id.clone(),
-                manifest_source: source,
-                manifest_version: version,
-                fallback_reason: String::new(),
-                title_signal: false,
-            },
-        );
+        evidence.rule_id = paths::line(&rule.id);
+        evidence.title_signal = rule.title_spinner || !rule.title_any.is_empty();
+        return (rule.state, evidence);
     }
-
-    // No rule matched. Codex consults the terminal title: a spinner means
-    // working, a plain title means idle, no title means unknown.
+    if provider == Provider::Codex && spinner(&title) {
+        evidence.rule_id = "codex-title-spinner".into();
+        evidence.title_signal = true;
+        return (AgentActivity::Working, evidence);
+    }
+    if clean.trim().is_empty() && (provider != Provider::Codex || title.trim().is_empty()) {
+        evidence.fallback_reason = "empty-terminal-snapshot".into();
+        return (AgentActivity::Unknown, evidence);
+    }
     if provider == Provider::Codex {
-        if SPINNER_GLYPHS.iter().any(|g| title.contains(*g)) {
-            return (
-                AgentActivity::Working,
-                MatchEvidence {
-                    rule_id: "codex-title-spinner".into(),
-                    manifest_source: source,
-                    manifest_version: version,
-                    fallback_reason: String::new(),
-                    title_signal: true,
-                },
-            );
+        if title.trim().is_empty() {
+            evidence.fallback_reason = "no-rule-matched-no-title".into();
+            return (AgentActivity::Unknown, evidence);
         }
-        if !title.trim().is_empty() {
-            return (
-                AgentActivity::Idle,
-                MatchEvidence {
-                    manifest_source: source,
-                    manifest_version: version,
-                    fallback_reason: "codex-title-without-spinner".into(),
-                    title_signal: true,
-                    ..Default::default()
-                },
-            );
-        }
-        return (
-            AgentActivity::Unknown,
-            MatchEvidence {
-                manifest_source: source,
-                manifest_version: version,
-                fallback_reason: "no-rule-matched-no-title".into(),
-                ..Default::default()
-            },
-        );
+        evidence.title_signal = true;
+        evidence.fallback_reason = "codex-title-without-spinner".into();
+    } else {
+        evidence.fallback_reason = "default_known_agent_idle_fallback".into();
     }
-
-    // Herdr parity: known non-Codex agents fall back to idle, labeled.
-    (
-        AgentActivity::Idle,
-        MatchEvidence {
-            manifest_source: source,
-            manifest_version: version,
-            fallback_reason: "default_known_agent_idle_fallback".into(),
-            ..Default::default()
-        },
-    )
+    (AgentActivity::Idle, evidence)
 }
 
-/// Human line for the detail panel / CLI, always with provenance.
-pub fn describe(provider: Provider, activity: AgentActivity, evidence: &MatchEvidence) -> String {
-    let agent = match provider {
-        Provider::Pi => "pi",
-        Provider::Claude => "claude",
-        Provider::Codex => "codex",
-        Provider::Opencode => "opencode",
-    };
-    if evidence.rule_id.is_empty() {
-        format!(
-            "{agent} · {} ({}; {} manifest v{})",
-            activity.label(),
-            evidence.fallback_reason,
-            evidence.manifest_source,
-            evidence.manifest_version
-        )
-    } else {
-        format!(
-            "{agent} · {} (rule {}; {} manifest v{})",
-            activity.label(),
-            evidence.rule_id,
-            evidence.manifest_source,
-            evidence.manifest_version
-        )
+#[derive(Default)]
+struct Observation {
+    working_seen: bool,
+    finished: bool,
+    idle: Option<(u64, u64, u8)>,
+}
+/// Per monitor-run, memory-only history. No screen text or durable state.
+#[derive(Default)]
+pub struct ActivityTracker {
+    records: HashMap<String, Observation>,
+}
+impl ActivityTracker {
+    pub fn retain(&mut self, active: &HashSet<String>) {
+        self.records.retain(|key, _| active.contains(key));
     }
+    pub fn observe(
+        &mut self,
+        key: &str,
+        state: AgentActivity,
+        mut evidence: MatchEvidence,
+        signature: Option<u64>,
+        now_ms: u64,
+    ) -> (AgentActivity, MatchEvidence) {
+        if self.records.len() >= 4096 && !self.records.contains_key(key) {
+            self.records.clear();
+        }
+        let observation = self.records.entry(key.into()).or_default();
+        match state {
+            AgentActivity::Working => {
+                observation.working_seen = true;
+                observation.finished = false;
+                observation.idle = None;
+            }
+            AgentActivity::Idle if signature.is_some() => {
+                if observation.working_seen {
+                    let signature = signature.unwrap();
+                    let idle = observation.idle.get_or_insert((signature, now_ms, 0));
+                    if idle.0 != signature {
+                        *idle = (signature, now_ms, 0);
+                    }
+                    idle.2 = idle.2.saturating_add(1);
+                    evidence.observations = idle.2;
+                    if idle.2 >= 2 && now_ms.saturating_sub(idle.1) >= 1500 {
+                        observation.finished = true;
+                    }
+                    if observation.finished {
+                        evidence.transition = "observed-working-to-settled-idle (inferred turn end, not task completion)".into();
+                        return (AgentActivity::Finished, evidence);
+                    }
+                }
+            }
+            AgentActivity::Blocked | AgentActivity::Waiting => {
+                observation.finished = false;
+                observation.idle = None;
+            }
+            _ => {
+                *observation = Observation::default();
+            }
+        }
+        (state, evidence)
+    }
+}
+/// Identity includes process start and optional verified session generation.
+pub fn pane_key(p: &crate::tmux::PaneIdentity, generation: &str) -> String {
+    serde_json::to_string(&(
+        crate::tmux::socket_key(&p.socket),
+        &p.server,
+        &p.pane,
+        p.pane_pid,
+        &p.pane_start,
+        p.client_pid,
+        &p.client_start,
+        p.provider,
+        &p.cwd,
+        generation,
+    ))
+    .expect("pane identity is serializable")
+}
+pub fn describe(provider: Provider, state: AgentActivity, evidence: &MatchEvidence) -> String {
+    let why = if !evidence.transition.is_empty() {
+        &evidence.transition
+    } else if !evidence.rule_id.is_empty() {
+        &evidence.rule_id
+    } else {
+        &evidence.fallback_reason
+    };
+    format!(
+        "{} · {} ({}; {} manifest v{}; inferred)",
+        provider.label(),
+        state.label(),
+        why,
+        evidence.manifest_source,
+        evidence.manifest_version
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TEST_MANIFEST: &str = r#"
+    const TEST: &str = r#"
 manifest_version = 7
 [[rule]]
 id = "approval"
@@ -339,109 +428,288 @@ state = "working"
 screen_any = ["done-marker"]
 bottom_lines = 3
 "#;
-
     #[test]
     fn ordered_rules_win_and_blocked_is_strict() {
-        // Approval marker present: blocked, even with a spinner too.
-        let (state, evidence) = classify_with_override(
-            Provider::Codex,
-            "",
-            "⠼ Working\nApprove? (y/n)",
-            Some(TEST_MANIFEST),
-        );
-        assert_eq!(state, AgentActivity::Blocked);
-        assert_eq!(evidence.rule_id, "approval");
-
-        // Spinner alone: working.
-        let (state, evidence) =
-            classify_with_override(Provider::Codex, "", "⠼ Working on it", Some(TEST_MANIFEST));
-        assert_eq!(state, AgentActivity::Working);
-        assert_eq!(evidence.rule_id, "spinner");
-
-        // Novel prompt shape is NOT blocked (strict): Codex without title
-        // falls to unknown, others to the idle fallback.
-        let (state, _) = classify_with_override(
-            Provider::Codex,
-            "",
-            "Something needs your okay-ish confirmation",
-            Some(TEST_MANIFEST),
-        );
-        assert_eq!(state, AgentActivity::Unknown);
-        let (state, evidence) = classify_with_override(
-            Provider::Claude,
-            "",
-            "Something needs your okay-ish confirmation",
-            Some(TEST_MANIFEST),
-        );
-        assert_eq!(state, AgentActivity::Idle);
+        let (s, e) =
+            classify_with_override(Provider::Codex, "", "⠼ Working\nApprove? (y/n)", Some(TEST));
+        assert_eq!(s, AgentActivity::Blocked);
+        assert_eq!(e.rule_id, "approval");
+        let (s, e) = classify_with_override(Provider::Codex, "", "⠼ Working on it", Some(TEST));
+        assert_eq!(s, AgentActivity::Working);
+        assert_eq!(e.rule_id, "spinner");
         assert_eq!(
-            evidence.fallback_reason,
-            "default_known_agent_idle_fallback"
+            classify_with_override(
+                Provider::Codex,
+                "",
+                "Something needs okay-ish confirmation",
+                Some(TEST)
+            )
+            .0,
+            AgentActivity::Unknown
         );
-
-        // screen_none vetoes the match.
-        let (state, _) =
-            classify_with_override(Provider::Codex, "", "Working error", Some(TEST_MANIFEST));
-        assert_eq!(state, AgentActivity::Unknown);
+        assert_eq!(
+            classify_with_override(
+                Provider::Claude,
+                "",
+                "Something needs okay-ish confirmation",
+                Some(TEST)
+            )
+            .0,
+            AgentActivity::Idle
+        );
+        assert_eq!(
+            classify_with_override(Provider::Codex, "", "Working error", Some(TEST)).0,
+            AgentActivity::Unknown
+        );
     }
-
     #[test]
     fn bottom_lines_scopes_the_match() {
-        let tail = "done-marker\nfiller\nfiller\nfiller\nfiller";
-        let (state, _) = classify_with_override(Provider::Codex, "", tail, Some(TEST_MANIFEST));
-        // Marker is 5 lines up: outside the last-3 scope, no title either.
-        assert_eq!(state, AgentActivity::Unknown);
-        let tail = "filler\nfiller\ndone-marker";
-        let (state, evidence) =
-            classify_with_override(Provider::Codex, "", tail, Some(TEST_MANIFEST));
-        assert_eq!(state, AgentActivity::Working);
-        assert_eq!(evidence.rule_id, "scoped-tail");
+        assert_eq!(
+            classify_with_override(
+                Provider::Codex,
+                "",
+                "done-marker\nfiller\nfiller\nfiller\nfiller",
+                Some(TEST)
+            )
+            .0,
+            AgentActivity::Unknown
+        );
+        assert_eq!(
+            classify_with_override(
+                Provider::Codex,
+                "",
+                "filler\nfiller\ndone-marker",
+                Some(TEST)
+            )
+            .0,
+            AgentActivity::Working
+        );
     }
-
     #[test]
     fn codex_title_signal_matrix() {
-        // Spinner in title: working even with an empty screen.
-        let (state, evidence) =
-            classify_with_override(Provider::Codex, "⠼ codex", "", Some(TEST_MANIFEST));
-        assert_eq!(state, AgentActivity::Working);
-        assert!(evidence.title_signal);
-        // Plain title: idle.
-        let (state, _) = classify_with_override(Provider::Codex, "codex", "", Some(TEST_MANIFEST));
-        assert_eq!(state, AgentActivity::Idle);
-        // No title, no rule: unknown.
-        let (state, _) = classify_with_override(Provider::Codex, "", "", Some(TEST_MANIFEST));
-        assert_eq!(state, AgentActivity::Unknown);
+        assert_eq!(
+            classify_with_override(Provider::Codex, "⠼ codex", "", Some(TEST)).0,
+            AgentActivity::Working
+        );
+        assert_eq!(
+            classify_with_override(Provider::Codex, "codex", "", Some(TEST)).0,
+            AgentActivity::Idle
+        );
+        assert_eq!(
+            classify_with_override(Provider::Codex, "filename ⠼", "", Some(TEST)).0,
+            AgentActivity::Idle
+        );
+        assert_eq!(
+            classify_with_override(Provider::Codex, "", "", Some(TEST)).0,
+            AgentActivity::Unknown
+        );
     }
-
     #[test]
     fn invalid_manifest_falls_back_to_bundled() {
-        let (state, evidence) =
-            classify_with_override(Provider::Codex, "", "⠼ Working", Some("not = [valid"));
-        assert_eq!(state, AgentActivity::Working);
-        assert_eq!(evidence.manifest_source, "bundled");
+        let (s, e) = classify_with_override(Provider::Codex, "", "⠼ Working", Some("not = [valid"));
+        assert_eq!(s, AgentActivity::Working);
+        assert_eq!(e.manifest_source, "bundled");
+        assert!(!e.warning.is_empty());
     }
-
     #[test]
     fn bundled_manifests_all_parse() {
-        for provider in [
+        for p in [
             Provider::Pi,
             Provider::Claude,
             Provider::Codex,
             Provider::Opencode,
         ] {
-            let (text, _) = bundled(provider);
-            let manifest = bundled_manifest(text);
-            assert!(manifest.manifest_version >= 1);
-            assert!(!manifest.rule.is_empty());
+            assert!(!parse(bundled(p).0).unwrap().rule.is_empty());
         }
     }
-
     #[test]
     fn describe_always_shows_provenance() {
-        let (_, evidence) =
-            classify_with_override(Provider::Codex, "", "⠼ Working", Some(TEST_MANIFEST));
-        let line = describe(Provider::Codex, AgentActivity::Working, &evidence);
-        assert!(line.contains("rule spinner"));
-        assert!(line.contains("manifest v7"));
+        let (_, e) = classify_with_override(Provider::Codex, "", "⠼ Working", Some(TEST));
+        assert!(
+            describe(Provider::Codex, AgentActivity::Working, &e)
+                .contains("spinner; override manifest v7")
+        );
+    }
+    #[test]
+    fn provider_signal_matrix_rejects_prose_and_stale_approvals() {
+        for (p, title, screen) in [
+            (Provider::Pi, "pi", "── ⠼ Working ───\n>"),
+            (
+                Provider::Claude,
+                "claude",
+                "✻ Thinking… (3s · esc to interrupt)\n❯",
+            ),
+            (
+                Provider::Codex,
+                "codex",
+                "• Working (2s • esc to interrupt)\n›",
+            ),
+            (Provider::Opencode, "opencode", "press esc to interrupt"),
+        ] {
+            assert_eq!(
+                classify_with_override(p, title, screen, Some(bundled(p).0)).0,
+                AgentActivity::Working,
+                "{p:?}"
+            );
+        }
+        for (p, title, screen, state) in [
+            (
+                Provider::Pi,
+                "pi",
+                "Choose an option\nenter to select\nesc to cancel",
+                AgentActivity::Waiting,
+            ),
+            (
+                Provider::Claude,
+                "⠼ claude",
+                "❯ 1. Yes, proceed\n2. No\nEsc to cancel",
+                AgentActivity::Blocked,
+            ),
+            (
+                Provider::Codex,
+                "⠼ codex",
+                "› inspect\nWould you like to proceed?\n› 1. Yes\nEsc to cancel",
+                AgentActivity::Blocked,
+            ),
+            (
+                Provider::Opencode,
+                "opencode",
+                "△ Permission required\npress esc to interrupt",
+                AgentActivity::Blocked,
+            ),
+        ] {
+            assert_eq!(
+                classify_with_override(p, title, screen, Some(bundled(p).0)).0,
+                state,
+                "{p:?}"
+            );
+        }
+        for p in [
+            Provider::Pi,
+            Provider::Claude,
+            Provider::Codex,
+            Provider::Opencode,
+        ] {
+            assert_eq!(
+                classify_with_override(
+                    p,
+                    p.label(),
+                    "The docs mention Working, Thinking, Allow, Approve and (y/n).",
+                    Some(bundled(p).0)
+                )
+                .0,
+                AgentActivity::Idle
+            );
+            assert_eq!(
+                classify_with_override(
+                    p,
+                    p.label(),
+                    "API Error: authentication failed",
+                    Some(bundled(p).0)
+                )
+                .0,
+                AgentActivity::Error
+            );
+            assert_eq!(
+                classify_with_override(p, "", "", Some(bundled(p).0)).0,
+                AgentActivity::Unknown
+            );
+        }
+        let old = format!("Working...\n{}\n>", "a settled response\n".repeat(20));
+        assert_eq!(
+            classify_with_override(Provider::Pi, "pi", &old, Some(PI)).0,
+            AgentActivity::Idle
+        );
+        assert_eq!(
+            classify_with_override(
+                Provider::Codex,
+                "codex",
+                "• Working (2s • esc to interrupt)\n• Here is the answer.\n›",
+                Some(CODEX)
+            )
+            .0,
+            AgentActivity::Idle
+        );
+        let old = "Yes, proceed\nesc to cancel\n› a later prompt\nThe action is complete.";
+        assert_eq!(
+            classify_with_override(Provider::Codex, "codex", old, Some(CODEX)).0,
+            AgentActivity::Idle
+        );
+    }
+    #[test]
+    fn priorities_are_explicit_and_legacy_ties_keep_first_match() {
+        let raw = r#"[[rule]]
+id = "first"
+state = "working"
+screen_any = ["signal"]
+[[rule]]
+id = "second"
+state = "blocked"
+priority = 100
+screen_any = ["signal"]"#;
+        assert_eq!(
+            classify_with_override(Provider::Pi, "", "signal", Some(raw)).0,
+            AgentActivity::Blocked
+        );
+        let derived = "[[rule]]\nid='untrusted-finish'\nstate='finished'\nscreen_any=['done']";
+        assert_ne!(
+            classify_with_override(Provider::Pi, "", "done", Some(derived)).0,
+            AgentActivity::Finished
+        );
+    }
+    #[test]
+    fn finished_requires_observed_work_and_two_settled_samples() {
+        let mut t = ActivityTracker::default();
+        let e = MatchEvidence::default();
+        assert_eq!(
+            t.observe("pane", AgentActivity::Idle, e.clone(), Some(1), 0)
+                .0,
+            AgentActivity::Idle
+        );
+        t.observe("pane", AgentActivity::Working, e.clone(), Some(2), 2000);
+        assert_eq!(
+            t.observe("pane", AgentActivity::Idle, e.clone(), Some(3), 4000)
+                .0,
+            AgentActivity::Idle
+        );
+        let (s, e2) = t.observe("pane", AgentActivity::Idle, e.clone(), Some(3), 6000);
+        assert_eq!(s, AgentActivity::Finished);
+        assert!(!e2.transition.is_empty());
+        assert_eq!(
+            t.observe("pane", AgentActivity::Working, e.clone(), Some(4), 8000)
+                .0,
+            AgentActivity::Working
+        );
+        assert_eq!(
+            t.observe("new-pid", AgentActivity::Idle, e, Some(3), 10000)
+                .0,
+            AgentActivity::Idle
+        );
+    }
+    #[test]
+    fn failures_errors_and_changing_snapshots_cannot_complete_work() {
+        let mut t = ActivityTracker::default();
+        let e = MatchEvidence::default();
+        t.observe("p", AgentActivity::Working, e.clone(), Some(1), 0);
+        t.observe("p", AgentActivity::Idle, e.clone(), Some(2), 2000);
+        assert_eq!(
+            t.observe("p", AgentActivity::Idle, e.clone(), Some(3), 4000)
+                .0,
+            AgentActivity::Idle
+        );
+        t.observe("p", AgentActivity::Unknown, e.clone(), None, 6000);
+        assert_eq!(
+            t.observe("p", AgentActivity::Idle, e.clone(), Some(3), 8000)
+                .0,
+            AgentActivity::Idle
+        );
+        t.observe("p", AgentActivity::Working, e.clone(), Some(1), 10000);
+        t.observe("p", AgentActivity::Error, e.clone(), Some(1), 12000);
+        assert_eq!(
+            t.observe("p", AgentActivity::Idle, e, Some(3), 14000).0,
+            AgentActivity::Idle
+        );
+        t.retain(&HashSet::new());
+        assert!(t.records.is_empty());
     }
 }

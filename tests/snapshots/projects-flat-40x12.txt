@@ -1,0 +1,12 @@
+╭ Search projects ─────────────────────╮
+│Name or folder…  / or Ctrl-f          │
+╰──────────────────────────────────────╯
+╭ Projects · Flat · A–Z ───────────────╮
+│› All projects  8                     │
+│  Acme Website                       5│
+│  Api                                1│
+│  Tests                              1│
+│  Tooling                            1│
+╰ /repo ───────────────────────────────╯
+Space fold  v layout  s sort  ? actions
+Project layout: Flat

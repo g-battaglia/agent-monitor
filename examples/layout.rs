@@ -1,54 +1,106 @@
-//! Deterministic preview with synthetic data.
-//!
-//! Renders one fixed catalog to stdout so layout changes stay visible in
-//! review. No Pi, tmux, disk catalog, or real user data is ever touched.
+//! Deterministic four-agent preview with synthetic folders and conversations.
+//! No real agent, tmux server, session file, or catalog is read.
 use agent_monitor::{
     model::*,
+    tmux::PaneIdentity,
     ui::{App, render},
 };
 use ratatui::{Terminal, backend::TestBackend};
 fn main() -> anyhow::Result<()> {
-    let mut app = App {
-        view: View::All,
-        ..App::default()
-    };
-    // Generic demo names on purpose: nothing here should look like a real
-    // client project, session, or folder from anyone's machine.
-    app.catalog.sessions = [
-        "website-redesign",
-        "api-migration",
-        "onboarding-flow",
-        "perf-audit",
-        "new-landing",
-        "billing-trial",
-        "release-notes",
-        "search-tuning",
-        "mobile-spacing",
-        "signup-copy",
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(i, name)| Session {
-        id: format!("demo-{i}"),
-        metadata: Metadata {
-            name: name.into(),
-            cwd: "/repo/acme-website".into(),
-            ..Default::default()
-        },
-        state: ResumeState::Resume,
-        note: if i == 0 {
-            "Check the hero spacing in a real browser.".into()
-        } else {
-            String::new()
-        },
-        done_revision: 0,
-        done_at: 0,
-        available: true,
-        presence_verified: false,
-        bindings: vec![],
-        probable: vec![],
-    })
-    .collect();
+    let mut app = App::default();
+    let demos = [
+        (
+            Provider::Claude,
+            "website-redesign",
+            "/repo/acme-website",
+            true,
+        ),
+        (
+            Provider::Codex,
+            "api-migration",
+            "/repo/acme-website/api",
+            true,
+        ),
+        (Provider::Pi, "mobile-spacing", "/repo/acme-website", true),
+        (Provider::Opencode, "test-tooling", "/repo/tooling", true),
+        (
+            Provider::Claude,
+            "onboarding-flow",
+            "/repo/acme-website",
+            false,
+        ),
+        (
+            Provider::Codex,
+            "search-tuning",
+            "/repo/acme-website/api",
+            false,
+        ),
+        (Provider::Pi, "release-notes", "/repo/acme-website", false),
+        (Provider::Opencode, "perf-audit", "/repo/tooling", false),
+    ];
+    app.catalog.sessions = demos
+        .into_iter()
+        .enumerate()
+        .map(|(i, (provider, name, cwd, open))| {
+            let probable = if open {
+                vec![PaneIdentity {
+                    socket: "/synthetic/tmux".into(),
+                    server: "demo".into(),
+                    pane: format!("%{i}"),
+                    pane_pid: 0,
+                    pane_start: "synthetic".into(),
+                    client_pid: 0,
+                    client_start: "synthetic".into(),
+                    target: format!("demo:{i}.0"),
+                    session: "demo".into(),
+                    window: i.to_string(),
+                    cwd: cwd.into(),
+                    command: provider.label().into(),
+                    title: name.into(),
+                    provider: Some(provider),
+                    activity: Some(match i {
+                        0 => agent_monitor::activity::AgentActivity::Working,
+                        1 => agent_monitor::activity::AgentActivity::Finished,
+                        2 => agent_monitor::activity::AgentActivity::Blocked,
+                        _ => agent_monitor::activity::AgentActivity::Idle,
+                    }),
+                    activity_evidence: Some(agent_monitor::activity::MatchEvidence {
+                        rule_id: "synthetic-status".into(),
+                        manifest_source: "bundled".into(),
+                        manifest_version: 2,
+                        ..Default::default()
+                    }),
+                }]
+            } else {
+                vec![]
+            };
+            Session {
+                id: format!("demo-{i}"),
+                metadata: Metadata {
+                    provider,
+                    name: name.into(),
+                    cwd: cwd.into(),
+                    ..Default::default()
+                },
+                state: if i == 0 || i == 2 {
+                    ResumeState::Resume
+                } else {
+                    ResumeState::History
+                },
+                note: if i == 0 {
+                    "Check the hero spacing in a real browser.".into()
+                } else {
+                    String::new()
+                },
+                done_revision: 0,
+                done_at: 0,
+                available: true,
+                presence_verified: false,
+                bindings: vec![],
+                probable,
+            }
+        })
+        .collect();
     app.refresh_filter();
     app.select(0);
     app.detail_id = app.selected.clone();
@@ -60,15 +112,52 @@ fn main() -> anyhow::Result<()> {
             tool: false,
         },
         Message {
-            role: "Pi".into(),
+            role: "Claude".into(),
             text: "The draft is ready for review.\nMobile spacing still needs checking.".into(),
             time: 0,
             tool: false,
         },
     ];
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|a| a == "--menu" || a == "--menu-live") {
+        let live = args.iter().any(|a| a == "--menu-live");
+        if live {
+            app.catalog.sessions[0].id = "pane-demo".into();
+            app.catalog.sessions[0].state = ResumeState::History;
+            app.catalog.sessions[0].note.clear();
+            app.catalog.sessions[0].metadata.name =
+                "Review navigation, keyboard shortcuts, and accessibility in the website mockup"
+                    .into();
+            app.select(0);
+        }
+        let mut menu = agent_monitor::ui::menu::CommandMenu::new(&app);
+        if live {
+            menu.selected = menu.actions.iter().position(|a| a.shortcut == "n").unwrap();
+        }
+        app.command_menu = Some(menu);
+    }
     let mut terminal = Terminal::new(TestBackend::new(120, 32))?;
     terminal.draw(|frame| render::draw(frame, &app))?;
     let buffer = terminal.backend().buffer();
+    if args.iter().any(|a| a == "--cells") {
+        let cells = (0..32)
+            .map(|y| {
+                (0..120)
+                    .map(|x| {
+                        let cell = &buffer[(x, y)];
+                        serde_json::json!([
+                            cell.symbol(),
+                            format!("{:?}", cell.fg),
+                            format!("{:?}", cell.bg),
+                            cell.modifier.contains(ratatui::style::Modifier::REVERSED)
+                        ])
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string(&cells)?);
+        return Ok(());
+    }
     for y in 0..32 {
         for x in 0..120 {
             print!("{}", buffer[(x, y)].symbol());

@@ -1,12 +1,12 @@
 ╭ Search the page text ────────────────╮
-│T╭ Conversation commands ───────────╮ │
-╰─│ Acme Website / website-redesign  │─╯
-╭ │                                  │─╮
-│T│  Move to the next panelTab       │ │
-│A│  Catalog                         │ │
-│L│› Refresh the catalog   R         │ │
+│T╭ Conversation actions ────────────╮ │
+╰─│ [pi] To resume · Acme Website    │─╯
+╭ │ Catalog ←→/Tab 6/6               │─╮
+│T│ › Refresh catalog           [R]  │ │
+│A│                                  │ │
+│L│ ──────────────────────────────── │ │
 │ │ Re-read names, conversations,    │ │
 │N│ and openings without starting    │ │
-╰─│ ↑↓ choose   Enter run   Esc clos │─╯
-r ╰──────────────────────────────────╯  
-                                        
+╰─│ Tab groups  ↑↓ move  ↵ run  Esc  │─╯
+r ╰──────────────────────────────────╯
+

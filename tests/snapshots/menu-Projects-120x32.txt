@@ -1,32 +1,32 @@
 ╭ Search projects ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │Name or folder…  / or Ctrl-f                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ Projects ────────────────────────────────────╮╭ Acme Website / website-redesign ─────────────────────────────────────╮
+╭ Projects · Tree · A–Z ───────────────────────╮╭ Acme Website / website-redesign ─────────────────────────────────────╮
 │› All projects  5                             ││To resume    Presence unverified                                      │
-│  Acme Website  5                             ││Acme Website                                                          │
-│                                              ││Last exchange: —                                                      │
-│                       ╭ Project commands ────────────────────────────────────────────────────╮                       │
-│                       │ All projects                                                         │                       │
-╰───────────────────────│                                                                      │                       │
-╭ All · 5 ──────────────│  Find                                                                │                       │
-│›     [R] Acme Website │  Search projects                                           /         │                       │
-│      [R] Acme Website │  Project                                                             │                       │
-│      [R] Acme Website │  Open the selected project                                 Enter     │                       │
-│      [R] Acme Website │  Navigate                                                            │                       │
-│      [R] Acme Website │  Change view                                               f         │                       │
-│                       │  Pick another project                                      p         │                       │
-│                       │  Browse open agent runs                                    o         │                       │
-│                       │  Move to the next panel                                    Tab       │                       │
-│                       │  Catalog                                                             │                       │
-│                       │› Refresh the catalog                                       R         │                       │
-│                       │ Re-read names, conversations, and openings without starting agents.  │                       │
-│                       │                                                                      │                       │
-│                       │ ↑↓ choose   Enter run   Esc close                                    │                       │
-│                       ╰──────────────────────────────────────────────────────────────────────╯                       │
+│  ▾ Repo/                                    5││Acme Website                                                          │
+│  └─ Acme Website                            5││Last exchange: —                                                      │
+│                                              ││                                                                      │
+│                  ╭ Project actions ───────────────────────────────────────────────────────────────╮                  │
+│                  │ All view · Tree · A–Z                                                          │                  │
+│                  │ All projects                                                                   │                  │
+╰ /repo ───────────│ Categories       Catalog 1/1                                                   │                  │
+╭ All · 5 ─────────│   Find         │ › Refresh catalog                                        [R]  │                  │
+│› [pi][R] Acme Web│   Project      │                                                               │                  │
+│  [pi][R] Acme Web│   Folders      │                                                               │                  │
+│  [pi][R] Acme Web│   Navigate     │                                                               │                  │
+│  [pi][R] Acme Web│ ▸ Catalog      │                                                               │                  │
+│  [pi][R] Acme Web│                │                                                               │                  │
+│                  │ ────────────────────────────────────────────────────────────────────────────── │                  │
+│                  │ Re-read names, conversations, and openings without starting agents.            │                  │
+│                  │                                                                                │                  │
+│                  │ Tab/←→ groups   ↑↓ choose   Enter run   Esc close                              │                  │
+│                  ╰────────────────────────────────────────────────────────────────────────────────╯                  │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
 │                                              ││                                                                      │
 │                                              ││                                                                      │
 │                                              ││                                                                      │
 │                                              ││                                                                      │
 ╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
-Enter pick project   Tab sessions   / search   ? actions                                                                
-                                                                                                                        
+Space fold  E/C all  v tree/flat  s sort  Enter pick  ? actions
+

@@ -28,12 +28,12 @@ pub struct PaneIdentity {
     pub provider: Option<Provider>,
     /// Screen-inferred activity (Herdr-style). Ephemeral: recomputed each
     /// presence tick, never persisted. `None` = not sampled (unrecognized
-    /// provider, verified binding, or capture failure).
+    /// provider); failed captures report Unknown, even for verified bindings.
     #[serde(default)]
     pub activity: Option<crate::activity::AgentActivity>,
     /// Why the activity came out that way (rule id or fallback reason).
-    /// Display/provenance only; skipped in JSON snapshots.
-    #[serde(default, skip_serializing)]
+    /// Metadata-only provenance; no captured screen text.
+    #[serde(default)]
     pub activity_evidence: Option<crate::activity::MatchEvidence>,
 }
 
@@ -290,7 +290,7 @@ pub fn discover(config: &TmuxConfig) -> Result<Vec<PaneIdentity>> {
 
 /// Read-only snapshot of the live bottom of a pane's terminal buffer.
 ///
-/// Exact argv: `capture-pane -p -t <pane> -S -<lines>` — no shell,
+/// Exact argv: `capture-pane -p -t <pane> -S 0` — current viewport only,
 /// no writes, no input. Output is capped (`MAX_CAPTURE`) and the caller
 /// maps failures to `Unknown`, never to status-line errors. Use
 /// `paths::clean` on the result before matching or display.
@@ -301,21 +301,22 @@ pub fn capture_pane(socket: &str, pane: &str, lines: u32) -> Result<String> {
 /// Same as `capture_pane` with an injectable binary for tests.
 /// Production always passes the real `tmux`; tests pass a fake script.
 fn capture_with(program: &std::ffi::OsStr, socket: &str, pane: &str, lines: u32) -> Result<String> {
-    let lines = lines.clamp(1, 200).to_string();
+    let lines = lines.clamp(1, 200) as usize;
     let mut command = Command::new(program);
     command.args(["-S", socket]);
-    let output = crate::paths::output(command.args([
-        "capture-pane",
-        "-p",
-        "-t",
-        pane,
-        "-S",
-        &format!("-{lines}"),
-    ]))?;
+    let output = crate::paths::output(command.args(["capture-pane", "-p", "-t", pane, "-S", "0"]))?;
     ensure!(output.status.success(), "capture-pane failed");
     let output = String::from_utf8_lossy(&output.stdout).into_owned();
     ensure!(output.len() <= MAX_CAPTURE, "pane capture exceeds 64 KiB");
-    Ok(output)
+    let all = output.lines().collect::<Vec<_>>();
+    if all.len() <= lines {
+        return Ok(output);
+    }
+    let mut tail = all[all.len() - lines..].join("\n");
+    if output.ends_with('\n') {
+        tail.push('\n');
+    }
+    Ok(tail)
 }
 
 /// Count live Pi processes with no extension record.
@@ -860,15 +861,17 @@ else: sys.exit(1)
         let out = capture_with(fake.as_os_str(), "/fake/sock", "%9", 40).unwrap();
         assert_eq!(out, "line1\nline2\n");
         // 0 clamps to 1, huge values clamp to 200.
-        capture_with(fake.as_os_str(), "/fake/sock", "%9", 0).unwrap();
+        assert_eq!(
+            capture_with(fake.as_os_str(), "/fake/sock", "%9", 0).unwrap(),
+            "line2\n"
+        );
         capture_with(fake.as_os_str(), "/fake/sock", "%9", 9999).unwrap();
         // Over-cap output is refused, never truncated-and-matched.
         std::fs::write(&fake, "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\0' 'x'\n").unwrap();
         assert!(capture_with(fake.as_os_str(), "/fake/sock", "%9", 40).is_err());
         let commands = std::fs::read_to_string(dir.path().join("log")).unwrap();
-        assert!(commands.contains("\"-S\", \"-40\""));
-        assert!(commands.contains("\"-S\", \"-1\""));
-        assert!(commands.contains("\"-S\", \"-200\""));
+        assert!(commands.contains("\"-S\", \"0\""));
+        assert!(!commands.contains("\"-40\"") && !commands.contains("\"-200\""));
         // Read-only: capture must never send input or touch panes.
         for forbidden in [
             "send-keys",

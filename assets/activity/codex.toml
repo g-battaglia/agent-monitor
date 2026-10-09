@@ -1,15 +1,52 @@
-# Bundled screen-detection manifest for Codex (v1).
-#
-# Ordered rules, first match wins. `blocked` is deliberately strict:
-# only known approval/question markers count. See src/activity.rs.
-manifest_version = 1
+# Independent scoped rules informed by Herdr's current Codex title/live UI signals.
+# https://herdr.dev/docs/agents
+manifest_version = 2
+
+[[rule]]
+id = "action-required-title"
+state = "blocked"
+priority = 1100
+title_any = ["Action Required", "Action required"]
 
 [[rule]]
 id = "approval-prompt"
 state = "blocked"
-screen_any = ["Approve", "Allow", "accept?", "(y/n)", "[y/n]", "Yes, proceed", "Proceed?"]
+priority = 1000
+bottom_non_empty_lines = 12
+after_prompt = true
+case_insensitive = true
+screen_any = ["yes, proceed", "yes (y)", "[y/n]", "approve", "1. yes"]
+screen_all = ["esc to cancel"]
+
+[[rule]]
+id = "input-dialog"
+state = "waiting"
+priority = 990
+bottom_non_empty_lines = 12
+after_prompt = true
+case_insensitive = true
+screen_all = ["esc to cancel"]
+screen_any = ["enter to select", "enter to confirm", "enter to submit"]
+
+[[rule]]
+id = "title-spinner"
+state = "working"
+priority = 750
+title_spinner = true
 
 [[rule]]
 id = "spinner"
+no_later_response = true
 state = "working"
-screen_any = ["Working", "Thinking", "Esc to interrupt", "esc to interrupt", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+priority = 700
+bottom_non_empty_lines = 12
+case_insensitive = true
+line_starts_any = ["•", "◦", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "Working", "Thinking"]
+screen_any = [" to interrupt", "working", "thinking"]
+
+[[rule]]
+id = "api-error"
+state = "error"
+priority = 500
+bottom_non_empty_lines = 8
+line_starts_any = ["API Error:", "API error:", "Rate limit exceeded", "Authentication failed", "Unable to connect to API", "Request failed"]

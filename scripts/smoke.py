@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
     source = root / 'pi-sessions'
     source.mkdir()
     state = root / 'state'
-    env = dict(os.environ, PI_CODING_AGENT_SESSION_DIR=str(source),
+    env = dict(os.environ, HOME=str(root / 'home'), PI_CODING_AGENT_SESSION_DIR=str(source),
                PI_CODING_AGENT_DIR=str(root / 'pi'), TMUX_TMPDIR=str(root / 'no-tmux'),
                CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                XDG_DATA_HOME=str(root / 'data'), TERM='xterm-256color', NO_COLOR='1')
@@ -31,8 +31,8 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
         return subprocess.run([str(binary), '--data-dir', str(state), *args],
                               env=env, capture_output=True, text=True, check=True, timeout=15)
 
-    def session(path, identity, name, timestamp):
-        entries = [dict(type='session', version=3, id=identity, cwd=str(root), timestamp=timestamp),
+    def session(path, identity, name, timestamp, cwd=None):
+        entries = [dict(type='session', version=3, id=identity, cwd=str(cwd or root), timestamp=timestamp),
                    dict(type='session_info', id='name', parentId=None, name=name),
                    dict(type='message', id='user', parentId='name', timestamp=timestamp,
                         message=dict(role='user', content='Check the synthetic session.')),
@@ -64,6 +64,54 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
     screen.write_text('⠼ Working on it\n')
     out = json.loads(cli('agent', 'explain', '--file', str(screen), '--agent', 'codex', '--json').stdout)
     assert out['state'] == 'working' and out['rule'] == 'spinner' and out['manifest'] == 'bundled'
+    diagnostic_state = root / 'diagnostics-must-not-create-state'
+    for provider, text, expected in [('pi', '⠼ Working', 'working'),('claude', '❯ 1. Yes, proceed\nEsc to cancel', 'blocked'),('opencode', '△ Permission required', 'blocked'),('pi', 'enter to confirm\nesc to cancel', 'waiting'),('codex', 'API Error: authentication failed', 'error')]:
+        screen.write_text(text)
+        result = subprocess.run([str(binary), '--data-dir', str(diagnostic_state), 'agent', 'explain', '--file', str(screen), '--agent', provider, '--json'], env=env, capture_output=True, text=True, check=True, timeout=15)
+        report = json.loads(result.stdout)
+        assert report['state'] == expected and report['inferred']
+    assert not diagnostic_state.exists(), 'offline classification must not initialize SQLite/state'
+    fake_bin = root / 'bin'
+    fake_bin.mkdir()
+    fake_ps = fake_bin / 'ps'
+    fake_ps.write_text(f'''#!{sys.executable}
+import os
+from pathlib import Path
+counter = Path(os.environ['AM_TEST_COUNTER'])
+changed = os.environ.get('AM_TEST_REUSE') and counter.exists()
+start = '00:00:01' if changed else '00:00:00'
+print(f"1001 1 {{os.getuid()}} Mon Jan 1 00:00:00 2024 /bin/sh")
+print(f"1002 1001 {{os.getuid()}} Mon Jan 1 {{start}} 2024 pi")
+''')
+    fake_tmux = fake_bin / 'tmux'
+    fake_tmux.write_text(f'''#!{sys.executable}
+import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+assert args[:2] == ['-S', '/fake/socket'], args
+if args[2] == 'display-message': print('1:fixture')
+elif args[2] == 'list-panes': print('%23\\t1001\\tsh\\t/repo/project\\tfixture\\t1\\tfixture:1.0\\tpi')
+elif args[2] == 'capture-pane':
+    assert args[3:] == ['-p', '-t', '%23', '-S', '0'], args
+    counter = Path(os.environ['AM_TEST_COUNTER'])
+    count = int(counter.read_text()) if counter.exists() else 0
+    counter.write_text(str(count + 1))
+    print('⠼ Working' if count == 0 else '>')
+else: raise AssertionError('non-read-only command: ' + repr(args))
+''')
+    for executable in (fake_ps, fake_tmux): executable.chmod(0o700)
+    counter = root / 'capture-counter'
+    watch_env = dict(env, PATH=str(fake_bin) + os.pathsep + env['PATH'], TMUX='/fake/socket,1,0', AM_TEST_COUNTER=str(counter))
+    result = subprocess.run([str(binary), '--data-dir', str(diagnostic_state), 'agent', 'explain', '%23', '--watch', '--samples', '3', '--json'], env=watch_env, capture_output=True, text=True, check=True, timeout=15)
+    reports = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [r['state'] for r in reports] == ['working', 'idle', 'finished']
+    assert reports[-1]['evidence']['observations'] == 2
+    assert 'inferred turn end' in reports[-1]['evidence']['transition']
+    counter.unlink()
+    result = subprocess.run([str(binary), '--data-dir', str(diagnostic_state), 'agent', 'explain', '%23', '--watch', '--samples', '3', '--json'], env=dict(watch_env, AM_TEST_REUSE='1'), capture_output=True, text=True, timeout=15)
+    assert result.returncode != 0 and 'identity changed' in result.stderr
+    assert [json.loads(line)['state'] for line in result.stdout.splitlines()] == ['working']
+    assert not diagnostic_state.exists(), 'watching must not initialize SQLite/state'
     bad = subprocess.run([str(binary), '--data-dir', str(state), 'agent', 'explain',
                           '--file', str(screen), '--agent', 'bogus'],
                          env=env, capture_output=True, text=True, timeout=15)
@@ -99,6 +147,22 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
         assert preview['conversation']['messages'] and not preview['conversation']['partial']
     opened = json.loads(cli('sessions', '--open', '--json').stdout)
     assert 'sessions' in opened and 'panes' in opened
+    project_details = json.loads(cli('details', '--project', str(root), '--json').stdout)
+    assert project_details['project']['folder'] == str(root.resolve())
+    assert project_details['project']['saved_sessions'] == 5
+    session_details = json.loads(cli('details', identity, '--json').stdout)
+    assert session_details['session']['agent'] == 'pi'
+    assert session_details['session']['source_file'] == str((source / 'new.jsonl').resolve())
+    assert 'Folder:' in cli('details', identity).stdout
+    # Stale project/view preferences must not override All projects / Open startup.
+    with sqlite3.connect(state / 'sessions.db') as db:
+        db.execute('INSERT OR REPLACE INTO preferences VALUES(?,?)', ('project', str(root)))
+        db.execute('INSERT OR REPLACE INTO preferences VALUES(?,?)', ('explorer_view', json.dumps('done')))
+
+    # Nested project folders for real keyboard folding/layout/sort coverage.
+    (root / 'api' / 'tests').mkdir(parents=True)
+    session(source / 'api.jsonl', 'api-native', 'API fixture', '2026-01-01T00:00:00Z', root / 'api')
+    session(source / 'tests.jsonl', 'tests-native', 'Test fixture', '2026-01-01T00:00:00Z', root / 'api' / 'tests')
 
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 120, 0, 0))
@@ -108,24 +172,49 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
     process = subprocess.Popen([str(binary), '--data-dir', str(state)],
-                               stdin=slave, stdout=slave, stderr=slave, env=env,
+                               stdin=slave, stdout=slave, stderr=slave, env=env, cwd=root,
                                preexec_fn=controlling_terminal)
     os.close(slave)
 
     def drain(seconds):
+        captured = bytearray()
         until = time.monotonic() + seconds
         while time.monotonic() < until:
             ready, _, _ = select.select([master], [], [], max(0, until - time.monotonic()))
             if ready:
                 try:
-                    if not os.read(master, 65536):
+                    chunk = os.read(master, 65536)
+                    if not chunk:
                         break
+                    captured.extend(chunk)
                 except OSError:
                     break
+        return bytes(captured)
 
     try:
-        drain(1.2)
+        import re
+        screen = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', drain(1.2))
         assert process.poll() is None
+        assert b'All projects' in screen and b'Open \xc2\xb7' in screen
+        assert '\u203a All projects'.encode() in screen
+        # No panes are open in this fixture: explicitly choose All before editing.
+        os.write(master, b'fj\r')
+        drain(0.4)
+        os.write(master, b'1C')
+        assert '▸'.encode() in drain(0.3)
+        # Root disclosure at column 4 / row 6 (SGR mouse coordinates are 1-based).
+        os.write(master, b'\x1b[<0;4;6M')
+        assert '▾'.encode() in drain(0.3)
+        os.write(master, b'\x1b[<0;4;6M')
+        assert '▸'.encode() in drain(0.3)
+        os.write(master, b'v')
+        assert b'Flat' in drain(0.3)
+        os.write(master, b's')
+        assert b'Recent' in drain(0.3)
+        os.write(master, b'vE')
+        assert '▾'.encode() in drain(0.3)
+        os.write(master, b's2')
+        drain(0.2)
         os.write(master, b'nNote from the TUI\r')
         drain(0.8)
         os.write(master, b'd')
@@ -133,6 +222,16 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
         row = next(s for s in json.loads(cli('sessions', '--all', '--json').stdout) if s['id'] == identity)
         assert row['state'] == 'done'
         assert row['note'].endswith('Note from the TUI')
+        # Categorized action menu: direct terminal input, no provider action.
+        os.write(master, b'?')
+        assert b'Session actions' in drain(0.3)
+        os.write(master, b'\t')
+        assert b'Folders' in drain(0.3)
+        # Catalog category in the 82x16 modal centered within 120x32.
+        os.write(master, b'\x1b[<0;22;17M')
+        assert b'Refresh catalog' in drain(0.3)
+        os.write(master, b'\x1b')
+        drain(0.2)
         # Exercise project/filter/detail panels and a small terminal resize.
         os.write(master, b'fjj\r\tzk\x1b')
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 12, 40, 0, 0))
@@ -143,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
         process.wait(timeout=3)
         assert process.returncode == 0
         assert time.monotonic() - start < 1
-        print('PASS: four-provider sessions, previews, resume states, notes, undo, PTY resize and quit')
+        print('PASS: four-provider sessions, details, Open startup, project folding/flat/sorting, categorized menu, live-state diagnostics, notes, undo, PTY resize and quit')
     finally:
         if process.poll() is None:
             process.kill()

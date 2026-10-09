@@ -6,12 +6,12 @@
 //! (projects, sessions, conversation text) so switching panels never
 //! loses what was typed.
 pub mod menu;
+pub mod projects;
 pub mod render;
 mod runtime;
 mod worker;
 use crate::model::{Catalog, Conversation, Session, View, project_label};
 pub use runtime::run;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -42,10 +42,16 @@ pub struct App {
     pub status: String,
     pub no_color: bool,
     pub modal: Option<String>,
+    pub modal_details: bool,
+    pub modal_scroll: u16,
+    pub modal_max_scroll: std::cell::Cell<u16>,
     pub command_menu: Option<menu::CommandMenu>,
     pub menu_offset: std::cell::Cell<usize>,
+    pub menu_group_offset: std::cell::Cell<usize>,
     pub visible: Vec<usize>,
     pub project_paths: Vec<String>,
+    pub project_tree: projects::ProjectTree,
+    pub project_options: projects::ProjectOptions,
     pub max_scroll: std::cell::Cell<u16>,
     pub search_match: std::cell::Cell<u16>,
     pub project_offset: std::cell::Cell<usize>,
@@ -57,7 +63,7 @@ impl Default for App {
             catalog: Catalog::default(),
             project: None,
             project_row: 0,
-            view: View::All,
+            view: View::Open,
             selected: None,
             row: 0,
             panel: Panel::Sessions,
@@ -73,10 +79,16 @@ impl Default for App {
             status: String::new(),
             no_color: std::env::var_os("NO_COLOR").is_some(),
             modal: None,
+            modal_details: false,
+            modal_scroll: 0,
+            modal_max_scroll: std::cell::Cell::new(0),
             command_menu: None,
             menu_offset: std::cell::Cell::new(0),
+            menu_group_offset: std::cell::Cell::new(0),
             visible: vec![],
             project_paths: vec![],
+            project_tree: projects::ProjectTree::default(),
+            project_options: projects::ProjectOptions::default(),
             max_scroll: std::cell::Cell::new(0),
             search_match: std::cell::Cell::new(0),
             project_offset: std::cell::Cell::new(0),
@@ -102,33 +114,192 @@ impl App {
             Panel::Detail => &mut self.detail_search,
         }
     }
-    /// The All-projects action is an escape hatch from every list filter.
-    pub fn choose_project(&mut self, row: usize) {
+    /// Project scope and session view are independent; All projects keeps the view.
+    pub fn choose_project(&mut self, row: usize) -> bool {
         self.project_row = row;
+        if row
+            .checked_sub(1)
+            .and_then(|i| self.project_tree.rows.get(i))
+            .is_some_and(|r| r.is_group)
+        {
+            self.panel = Panel::Projects;
+            self.toggle_project_fold();
+            return false;
+        }
         self.project = row
             .checked_sub(1)
             .and_then(|i| self.project_paths.get(i).cloned());
         if row == 0 {
-            self.view = View::All;
             self.search.clear();
             self.project_search.clear();
         }
+        true
+    }
+    /// Resolve a hidden project to its closest visible ancestor, never a sibling.
+    pub fn visible_project_row(&self, cwd: &str) -> Option<usize> {
+        if let Some(i) = self.project_paths.iter().position(|p| p == cwd) {
+            return Some(i + 1);
+        }
+        self.project_paths
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.is_empty() && std::path::Path::new(cwd).starts_with(p))
+            .max_by_key(|(_, p)| std::path::Path::new(p).components().count())
+            .map(|(i, _)| i + 1)
+    }
+    fn refresh_projects(&mut self) {
+        let cursor = self
+            .project_row
+            .checked_sub(1)
+            .and_then(|i| self.project_paths.get(i))
+            .cloned();
+        self.project_tree = projects::build_with_options(
+            &self.catalog,
+            self.view,
+            self.project.as_deref(),
+            &self.project_search,
+            &self.project_options,
+        );
+        self.project_paths = self
+            .project_tree
+            .rows
+            .iter()
+            .map(|r| r.cwd.clone())
+            .collect();
+        self.project_row = cursor
+            .as_deref()
+            .and_then(|p| self.visible_project_row(p))
+            .unwrap_or(0);
+    }
+    pub fn toggle_project_layout(&mut self) {
+        self.project_options.layout = match self.project_options.layout {
+            projects::ProjectLayout::Tree => projects::ProjectLayout::Flat,
+            projects::ProjectLayout::Flat => projects::ProjectLayout::Tree,
+        };
+        self.refresh_projects();
+        self.status = format!("Project layout: {}", self.project_options.layout.label());
+    }
+    pub fn toggle_project_order(&mut self) {
+        self.project_options.order = match self.project_options.order {
+            projects::ProjectOrder::Alphabetical => projects::ProjectOrder::Recent,
+            projects::ProjectOrder::Recent => projects::ProjectOrder::Alphabetical,
+        };
+        self.refresh_projects();
+        let known = self.project_tree.known_timestamps;
+        let total = self.project_tree.project_count;
+        self.status = format!(
+            "Project order: {} · latest saved update known for {known}/{total} matching projects; live-only times unknown",
+            self.project_options.order.label()
+        );
+    }
+    pub fn fold_all_projects(&mut self, collapse: bool) {
+        if self.project_options.layout != projects::ProjectLayout::Tree {
+            self.project_options.layout = projects::ProjectLayout::Tree;
+            self.refresh_projects();
+        }
+        if self.project_tree.branches.is_empty() {
+            self.status = "No nested folders in this view; f → All includes saved history".into();
+            return;
+        }
+        if collapse && !self.project_search.is_empty() {
+            self.status = "Clear project search before collapsing branches".into();
+            return;
+        }
+        if collapse {
+            self.project_options
+                .collapsed
+                .extend(self.project_tree.branches.iter().cloned());
+        } else {
+            self.project_options.collapsed.clear();
+        }
+        self.refresh_projects();
+        self.status = if collapse {
+            "All project branches collapsed"
+        } else {
+            "All project branches expanded"
+        }
+        .into();
+    }
+    pub fn toggle_project_fold(&mut self) {
+        if self.project_options.layout != projects::ProjectLayout::Tree {
+            self.project_options.layout = projects::ProjectLayout::Tree;
+            self.refresh_projects();
+        }
+        if self.project_row == 0 {
+            let any = self
+                .project_tree
+                .branches
+                .iter()
+                .any(|p| self.project_options.collapsed.contains(p));
+            self.fold_all_projects(!any);
+            return;
+        }
+        if !self.project_search.is_empty() {
+            self.status = "Clear project search before collapsing branches".into();
+            return;
+        }
+        if let Some(row) = self
+            .project_tree
+            .rows
+            .get(self.project_row - 1)
+            .filter(|r| r.has_children)
+        {
+            let cwd = row.cwd.clone();
+            let expanded = self.project_options.collapsed.remove(&cwd);
+            if !expanded {
+                self.project_options.collapsed.insert(cwd.clone());
+            }
+            self.refresh_projects();
+            self.status = format!(
+                "{} project branch: {}",
+                if expanded { "Expanded" } else { "Collapsed" },
+                projects::folder(&cwd)
+            );
+        } else {
+            self.status = "No child folders here; ← goes to the parent, C/E folds all".into();
+        }
+    }
+    pub fn project_arrow(&mut self, right: bool) {
+        if self.project_options.layout != projects::ProjectLayout::Tree {
+            self.panel = if right {
+                Panel::Sessions
+            } else {
+                Panel::Projects
+            };
+            return;
+        }
+        if self.project_row == 0 {
+            self.fold_all_projects(!right);
+            if right && !self.project_paths.is_empty() {
+                self.project_row = 1;
+            }
+            return;
+        }
+        let row = self.project_tree.rows.get(self.project_row - 1).cloned();
+        if let Some(row) = row {
+            if right && row.has_children {
+                if row.collapsed {
+                    self.toggle_project_fold();
+                } else {
+                    self.project_row += 1;
+                }
+            } else if !right {
+                if row.has_children && !row.collapsed {
+                    self.toggle_project_fold();
+                } else {
+                    self.project_row = row
+                        .parent
+                        .as_deref()
+                        .and_then(|p| self.visible_project_row(p))
+                        .unwrap_or(0);
+                }
+            } else {
+                self.panel = Panel::Sessions;
+            }
+        }
     }
     pub fn refresh_filter(&mut self) {
-        let project_needle = self.project_search.to_lowercase();
-        self.project_paths = self
-            .catalog
-            .sessions
-            .iter()
-            .map(|s| s.metadata.cwd.clone())
-            .chain(self.catalog.unbound.iter().map(|p| p.cwd.clone()))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|cwd| {
-                cwd.to_lowercase().contains(&project_needle)
-                    || project_label(cwd).to_lowercase().contains(&project_needle)
-            })
-            .collect();
+        self.refresh_projects();
         let needle = self.search.to_lowercase();
         self.visible = self
             .catalog
@@ -140,7 +311,8 @@ impl App {
                     && self.project.as_ref().is_none_or(|p| *p == s.metadata.cwd)
                     && (needle.is_empty()
                         || format!(
-                            "{} {} {} {} {}",
+                            "{} {} {} {} {} {}",
+                            s.live_activity().map(|a| a.label()).unwrap_or(""),
                             s.metadata.provider.label(),
                             s.metadata.title(),
                             s.metadata.cwd,
@@ -193,13 +365,11 @@ impl App {
             self.project_row = self
                 .project
                 .as_ref()
-                .and_then(|p| self.project_paths.iter().position(|c| c == p))
-                .map(|i| i + 1)
+                .and_then(|p| self.visible_project_row(p))
                 .unwrap_or(0);
         } else {
             self.project_row = project_cursor
-                .and_then(|p| self.project_paths.iter().position(|cwd| cwd == &p))
-                .map(|i| i + 1)
+                .and_then(|p| self.visible_project_row(&p))
                 .unwrap_or(self.project_row.min(self.project_paths.len()));
         }
         let row = id

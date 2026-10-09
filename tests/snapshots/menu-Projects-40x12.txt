@@ -1,12 +1,12 @@
 ╭ Search projects ─────────────────────╮
-│N╭ Project commands ────────────────╮ │
-╰─│ All projects                     │─╯
-╭ │                                  │─╮
-│›│  Move to the next panelTab       │ │
-│ │  Catalog                         │ │
-│ │› Refresh the catalog   R         │ │
+│N╭ Project actions ─────────────────╮ │
+╰─│ All view · Tree · A–Z            │─╯
+╭ │ Catalog ←→/Tab 5/5               │─╮
+│›│ › Refresh catalog           [R]  │ │
+│ │                                  │5│
+│ │ ──────────────────────────────── │5│
 │ │ Re-read names, conversations,    │ │
 │ │ and openings without starting    │ │
-╰─│ ↑↓ choose   Enter run   Esc clos │─╯
-En╰──────────────────────────────────╯se
-                                        
+╰ │ Tab groups  ↑↓ move  ↵ run  Esc  │─╯
+Sp╰──────────────────────────────────╯s
+

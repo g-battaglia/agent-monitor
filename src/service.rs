@@ -23,6 +23,8 @@ use std::{
 pub struct Service {
     pub root: PathBuf,
     pub store: Store,
+    activity: std::cell::RefCell<activity::ActivityTracker>,
+    activity_started: std::time::Instant,
 }
 
 /// Incremental scan state.
@@ -54,7 +56,12 @@ impl Service {
                 store.add_source(&path)?;
             }
         }
-        Ok(Self { root, store })
+        Ok(Self {
+            root,
+            store,
+            activity: Default::default(),
+            activity_started: std::time::Instant::now(),
+        })
     }
     pub fn begin_index(&self) -> Result<Indexer> {
         let sources = self.store.sources()?;
@@ -212,14 +219,14 @@ impl Service {
     }
     pub fn catalog(&self) -> Result<Catalog> {
         let mut warnings = vec![];
-        let panes = match tmux::discover(&tmux::TmuxConfig::default()) {
+        let mut panes = match tmux::discover(&tmux::TmuxConfig::default()) {
             Ok(p) => p,
             Err(_) => {
                 warnings.push("tmux presence is unverified".into());
                 vec![]
             }
         };
-        let bindings = match presence::records(&self.root, &panes) {
+        let mut bindings = match presence::records(&self.root, &panes) {
             Ok(b) => b,
             Err(e) => {
                 warnings.push(format!(
@@ -229,6 +236,27 @@ impl Service {
                 vec![]
             }
         };
+        attach_activity(
+            &mut panes,
+            &bindings,
+            &mut self.activity.borrow_mut(),
+            self.activity_started
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+        );
+        for binding in &mut bindings {
+            if let Some(old) = &binding.pane
+                && let Some(fresh) = panes.iter().find(|p| {
+                    p.socket == old.socket
+                        && p.pane == old.pane
+                        && p.client_pid == old.client_pid
+                        && p.client_start == old.client_start
+                })
+            {
+                binding.pane = Some(fresh.clone());
+            }
+        }
         // Project settings reveal additional storage roots, not session identity.
         for cwd in panes
             .iter()
@@ -313,7 +341,7 @@ impl Service {
         // Pi-only consumers (associate_probable, project-source scan,
         // unreported_pi, [~] hints) filter explicitly below; nothing here
         // is Pi-specific anymore.
-        let mut unbound: Vec<tmux::PaneIdentity> = panes
+        let unbound: Vec<tmux::PaneIdentity> = panes
             .into_iter()
             .filter(|p| {
                 p.provider.is_some()
@@ -324,7 +352,6 @@ impl Service {
                     })
             })
             .collect();
-        attach_activity(&mut unbound);
         if !unbound.is_empty() {
             for session in &mut sessions {
                 session.presence_verified = false;
@@ -423,23 +450,77 @@ impl Service {
         })
     }
 }
-/// Sample the live screen of unbound agent panes and attach the inferred
-/// activity (Herdr-style). Read-only `capture-pane` per pane, matched in
-/// memory and dropped; failures stay `None` (unsampled), never errors.
-/// Verified bindings are skipped upstream — integration wins over screen.
-fn attach_activity(panes: &mut [tmux::PaneIdentity]) {
-    for pane in panes.iter_mut() {
-        let Some(provider) = pane.provider else {
+/// Identity verification and screen activity are independent. Capture ALL
+/// known agent panes, including verified Pi openings, without keeping text.
+fn attach_activity(
+    panes: &mut [tmux::PaneIdentity],
+    bindings: &[Binding],
+    tracker: &mut activity::ActivityTracker,
+    now_ms: u64,
+) {
+    attach_activity_sampled(panes, bindings, tracker, now_ms, |pane| {
+        let tail = paths::clean(&tmux::capture_pane(&pane.socket, &pane.pane, 80)?);
+        let signature = (!tail.trim().is_empty()).then(|| pi::hash(tail.as_bytes()));
+        let (state, evidence) = activity::classify(
+            pane.provider.context("agent identity missing")?,
+            &pane.title,
+            &tail,
+        );
+        Ok((state, evidence, signature))
+    });
+}
+fn attach_activity_sampled(
+    panes: &mut [tmux::PaneIdentity],
+    bindings: &[Binding],
+    tracker: &mut activity::ActivityTracker,
+    now_ms: u64,
+    mut sample: impl FnMut(
+        &tmux::PaneIdentity,
+    ) -> Result<(
+        activity::AgentActivity,
+        activity::MatchEvidence,
+        Option<u64>,
+    )>,
+) {
+    let mut active = std::collections::HashSet::new();
+    for pane in panes {
+        let binding = bindings.iter().find(|b| {
+            b.pane
+                .as_ref()
+                .is_some_and(|p| p.socket == pane.socket && p.pane == pane.pane)
+        });
+        if binding.is_some() && pane.provider.is_none() {
+            pane.provider = Some(Provider::Pi);
+        }
+        if pane.provider.is_none() {
             continue;
-        };
-        let Ok(raw) = tmux::capture_pane(&pane.socket, &pane.pane, 40) else {
-            continue;
-        };
-        let tail = paths::clean(&raw);
-        let (state, evidence) = activity::classify(provider, &pane.title, &tail);
+        }
+        let generation = binding
+            .map(|b| {
+                format!(
+                    "{}:{}:{}",
+                    b.bridge.nonce, b.bridge.generation, b.bridge.native_id
+                )
+            })
+            .unwrap_or_default();
+        let key = activity::pane_key(pane, &generation);
+        active.insert(key.clone());
+        let (state, mut evidence, signature) = sample(pane).unwrap_or_else(|_| {
+            (
+                activity::AgentActivity::Unknown,
+                activity::MatchEvidence {
+                    fallback_reason: "terminal-capture-unavailable".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+        });
+        evidence.sampled_at = paths::now();
+        let (state, evidence) = tracker.observe(&key, state, evidence, signature, now_ms);
         pane.activity = Some(state);
         pane.activity_evidence = Some(evidence);
     }
+    tracker.retain(&active);
 }
 
 /// Reattach ephemeral presence to fresh store rows between full catalog
@@ -714,6 +795,76 @@ mod tests {
         assert_eq!(fresh.len(), 1);
     }
     #[test]
+    fn verified_panes_are_sampled_and_generations_failures_and_live_states_do_not_change_decisions()
+    {
+        let mut panes = vec![pane("π - release-notes")];
+        let mut bindings = vec![Binding {
+            bridge: Bridge {
+                version: 1,
+                nonce: "fixture".into(),
+                generation: 1,
+                pid: 2,
+                process_start: "start".into(),
+                native_id: "native".into(),
+                file: None,
+                cwd: "/repo/project".into(),
+                name: "release-notes".into(),
+                leaf: None,
+                socket: Some("/fake/socket".into()),
+                pane: Some("%1".into()),
+                seen: 0,
+            },
+            record: "/fake/record.json".into(),
+            pane: Some(panes[0].clone()),
+        }];
+        let mut tracker = activity::ActivityTracker::default();
+        let sample = |text: &'static str| {
+            move |p: &tmux::PaneIdentity| {
+                let (state, evidence) = activity::classify_with_override(
+                    Provider::Pi,
+                    &p.title,
+                    text,
+                    Some(include_str!("../assets/activity/pi.toml")),
+                );
+                Ok((state, evidence, Some(pi::hash(text.as_bytes()))))
+            }
+        };
+        attach_activity_sampled(&mut panes, &bindings, &mut tracker, 0, sample("⠼ Working"));
+        assert_eq!(panes[0].activity, Some(activity::AgentActivity::Working));
+        attach_activity_sampled(&mut panes, &bindings, &mut tracker, 2000, sample(">"));
+        attach_activity_sampled(&mut panes, &bindings, &mut tracker, 4000, sample(">"));
+        assert_eq!(panes[0].activity, Some(activity::AgentActivity::Finished));
+        bindings[0].pane = Some(panes[0].clone());
+        let mut saved = session();
+        saved.state = ResumeState::Done;
+        saved.note = "Keep my note".into();
+        saved.bindings = bindings.clone();
+        assert_eq!(
+            saved.live_activity(),
+            Some(activity::AgentActivity::Finished)
+        );
+        assert_eq!(saved.state, ResumeState::Done);
+        assert_eq!(saved.note, "Keep my note");
+        saved.probable.push({
+            let mut p = panes[0].clone();
+            p.activity = Some(activity::AgentActivity::Working);
+            p
+        });
+        assert_eq!(saved.live_activity(), Some(activity::AgentActivity::Mixed));
+        bindings[0].bridge.generation = 2;
+        attach_activity_sampled(&mut panes, &bindings, &mut tracker, 6000, sample(">"));
+        assert_eq!(panes[0].activity, Some(activity::AgentActivity::Idle));
+        attach_activity_sampled(&mut panes, &bindings, &mut tracker, 8000, |_| {
+            anyhow::bail!("fake capture failure")
+        });
+        assert_eq!(panes[0].activity, Some(activity::AgentActivity::Unknown));
+        assert_eq!(
+            panes[0].activity_evidence.as_ref().unwrap().fallback_reason,
+            "terminal-capture-unavailable"
+        );
+        assert_eq!(saved.state, ResumeState::Done);
+    }
+    #[test]
     fn passive_titles_are_hints_and_duplicates_are_never_guessed() {
         let pane = pane("π - release-notes - project");
         let mut sessions = vec![session()];
@@ -755,7 +906,12 @@ mod tests {
         let root = dir.path().join("state");
         let store = Store::open(&root).unwrap();
         store.add_source(&source).unwrap();
-        let service = Service { root, store };
+        let service = Service {
+            root,
+            store,
+            activity: Default::default(),
+            activity_started: std::time::Instant::now(),
+        };
         assert!(service.sync().unwrap().is_empty());
         service
             .store

@@ -1,32 +1,32 @@
 ╭ Search sessions ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │Name, project, or note…  / or Ctrl-f                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ Projects ────────────────────────────────────╮╭ Acme Website / website-redesign ─────────────────────────────────────╮
-│› All projects  5      ╭ Session commands ────────────────────────────────────────────────────╮                       │
-│  Acme Website  5      │ Acme Website / website-redesign                                      │                       │
-│                       │                                                                      │                       │
-│                       │  Find                                                                │                       │
-│                       │  Search sessions                                           /         │                       │
-╰───────────────────────│  Session                                                             │                       │
-╭ All · 5 ──────────────│  Open the agent or resume the work                         Enter     │                       │
-│›     [R] Acme Website │  Edit the next step                                        n         │                       │
-│      [R] Acme Website │  Mark as done                                              d         │                       │
-│      [R] Acme Website │  Mark to resume                                            r         │                       │
-│      [R] Acme Website │  Undo the last change                                      u         │                       │
-│      [R] Acme Website │  Show file info                                            i         │                       │
-│                       │  Navigate                                                            │                       │
-│                       │  Change view                                               f         │                       │
-│                       │  Pick another project                                      p         │                       │
-│                       │  Browse open agent runs                                    o         │                       │
-│                       │  Move to the next panel                                    Tab       │                       │
-│                       │  Catalog                                                             │                       │
-│                       │› Refresh the catalog                                       R         │                       │
-│                       │ Re-read names, conversations, and openings without starting agents.  │                       │
-│                       │                                                                      │                       │
-│                       │ ↑↓ choose   Enter run   Esc close                                    │                       │
-│                       ╰──────────────────────────────────────────────────────────────────────╯                       │
+╭ Projects · Tree · A–Z ───────────────────────╮╭ Acme Website / website-redesign ─────────────────────────────────────╮
+│› All projects  5                             ││To resume    Presence unverified                                      │
+│  ▾ Repo/                                    5││Acme Website                                                          │
+│  └─ Acme Website                            5││Last exchange: —                                                      │
+│                                              ││                                                                      │
+│                  ╭ Session actions ───────────────────────────────────────────────────────────────╮                  │
+│                  │ [pi] To resume · Acme Website                                                  │                  │
+│                  │ website-redesign                                                               │                  │
+╰ /repo ───────────│ Categories       Catalog 1/1                                                   │                  │
+╭ All · 5 ─────────│   Find         │ › Refresh catalog                                        [R]  │                  │
+│› [pi][R] Acme Web│   Session      │                                                               │                  │
+│  [pi][R] Acme Web│   Folders      │                                                               │                  │
+│  [pi][R] Acme Web│   Navigate     │                                                               │                  │
+│  [pi][R] Acme Web│ ▸ Catalog      │                                                               │                  │
+│  [pi][R] Acme Web│                │                                                               │                  │
+│                  │                │                                                               │                  │
+│                  │ ────────────────────────────────────────────────────────────────────────────── │                  │
+│                  │ Re-read names, conversations, and openings without starting agents.            │                  │
+│                  │                                                                                │                  │
+│                  │ Tab/←→ groups   ↑↓ choose   Enter run   Esc close                              │                  │
+│                  ╰────────────────────────────────────────────────────────────────────────────────╯                  │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
 │                                              ││                                                                      │
 │                                              ││                                                                      │
 ╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
-r to resume   d done   Enter open   f view   / search   ? actions                                                       
-                                                                                                                        
+r to resume   d done   Enter open   f view   / search   ? actions
+

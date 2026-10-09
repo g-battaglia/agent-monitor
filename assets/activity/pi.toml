@@ -1,9 +1,35 @@
-# Bundled screen-detection manifest for Pi (v1).
-# Only used for Pi panes WITHOUT a verified extension binding.
-# Bound panes ([O]) always win; this never overrides them.
-manifest_version = 1
+# Independent scoped rules informed by Herdr's live-terminal detector.
+# https://herdr.dev/docs/agents · no remote manifests or lifecycle plugin needed.
+manifest_version = 2
+
+[[rule]]
+id = "input-dialog"
+state = "waiting"
+priority = 1000
+bottom_non_empty_lines = 12
+case_insensitive = true
+screen_all = ["esc to cancel"]
+screen_any = ["enter to select", "enter to confirm", "enter to submit"]
 
 [[rule]]
 id = "spinner"
 state = "working"
-screen_any = ["Working", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+priority = 700
+bottom_non_empty_lines = 12
+line_starts_any = ["Working...", "Working…", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+screen_any = ["Working"]
+
+[[rule]]
+id = "api-error"
+state = "error"
+priority = 500
+bottom_non_empty_lines = 8
+line_starts_any = ["API Error:", "API error:", "Rate limit exceeded", "Authentication failed", "Unable to connect to API", "Request failed"]
+
+[[rule]]
+id = "composer"
+state = "idle"
+priority = 100
+bottom_non_empty_lines = 6
+line_starts_any = [">"]
+screen_none = ["esc to cancel", "esc to interrupt"]

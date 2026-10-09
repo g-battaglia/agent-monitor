@@ -1,12 +1,12 @@
-╭ Search sessions ─────────────────────────────────────────────────────────────╮
-│Name, project, or note…  / or Ctrl-f                                          │
+╭ Search projects ─────────────────────────────────────────────────────────────╮
+│Name or folder…  / or Ctrl-f                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╭ All · 5 ─────────────────────╮╭ Acme Website / website-redesign ─────────────╮
-│› [pi][R] Acme Website / websi││To resume    Presence unverified              │
-│  [pi][R] Acme Website / api-m││Acme Website                                  │
-│  [pi][R] Acme Website / onboa││Last exchange: —                              │
-│  [pi][R] Acme Website / perf-││                                              │
-│  [pi][R] Acme Website / relea││Next step                                     │
+╭ Projects · Flat · A–Z ───────╮╭ Acme Website / website-redesign ─────────────╮
+│› All projects  8             ││To resume    Presence unverified              │
+│  Acme Website               5││Acme Website                                  │
+│  Api                        1││Last exchange: —                              │
+│  Tests                      1││                                              │
+│  Tooling                    1││Next step                                     │
 │                              ││Check the hero spacing in a real browser.     │
 │                              ││                                              │
 │                              ││Latest saved branch                           │
@@ -19,6 +19,6 @@
 │                              ││Mobile spacing still needs checking.          │
 │                              ││                                              │
 │                              ││                                              │
-╰──────────────────────────────╯╰──────────────────────────────────────────────╯
-r to resume   d done   Enter open   f view   / search   ? actions
-
+╰ /repo ───────────────────────╯╰──────────────────────────────────────────────╯
+Space fold  E/C all  v tree/flat  s sort  Enter pick  ? actions
+Project layout: Flat

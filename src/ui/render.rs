@@ -5,10 +5,7 @@
 //! overlap; narrow terminals collapse to the active panel instead of
 //! squeezing unreadable columns side by side.
 use super::{App, Panel};
-use crate::{
-    model::{project_label, project_name},
-    paths,
-};
+use crate::{model::project_label, paths};
 use ratatui::{prelude::*, widgets::*};
 
 #[derive(Clone, Copy)]
@@ -77,7 +74,11 @@ pub fn areas(area: Rect, zoom: bool, panel: Panel) -> [Rect; 3] {
         };
     }
     let left = Layout::vertical([
-        Constraint::Length(7.min(body.height / 3)),
+        Constraint::Length(
+            (body.height / 3)
+                .clamp(7, 14)
+                .min(body.height.saturating_sub(6)),
+        ),
         Constraint::Min(3),
     ])
     .split(cols[0]);
@@ -130,7 +131,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         detail(frame, app, panes[2], theme);
     }
     let hints = match app.panel {
-        Panel::Projects => "Enter pick project   Tab sessions   / search   ? actions",
+        Panel::Projects if area.width < 65 => "Space fold  v layout  s sort  ? actions",
+        Panel::Projects => "Space fold  E/C all  v tree/flat  s sort  Enter pick  ? actions",
         Panel::Sessions if area.width < 65 => "r to resume  Enter open  ? actions",
         Panel::Sessions => "r to resume   d done   Enter open   f view   / search   ? actions",
         Panel::Detail if area.width < 65 => "r to resume  j/k scroll  ? actions",
@@ -162,8 +164,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(menu) = &app.command_menu {
         command_menu(frame, app, menu, theme);
     } else if let Some(text) = &app.modal {
-        let w = area.width.saturating_sub(4).min(76);
-        let h = area.height.saturating_sub(2).min(16);
+        let w = area
+            .width
+            .saturating_sub(4)
+            .min(if app.modal_details { 100 } else { 76 });
+        let h = area
+            .height
+            .saturating_sub(2)
+            .min(if app.modal_details { 24 } else { 16 });
         let rect = Rect::new(
             area.x + (area.width - w) / 2,
             area.y + (area.height - h) / 2,
@@ -171,18 +179,36 @@ pub fn draw(frame: &mut Frame, app: &App) {
             h,
         );
         frame.render_widget(Clear, rect);
-        frame.render_widget(
-            Paragraph::new(paths::clean(text))
-                .wrap(Wrap { trim: false })
-                .block(theme.block("Actions".into(), true)),
-            rect,
+        let block = theme.block(
+            if app.modal_details {
+                "Details · ↑↓ scroll · Esc close"
+            } else {
+                "Actions"
+            }
+            .into(),
+            true,
         );
+        let inner = block.inner(rect);
+        let paragraph = Paragraph::new(paths::clean(text)).wrap(Wrap { trim: false });
+        let max = paragraph
+            .line_count(inner.width)
+            .saturating_sub(inner.height as usize)
+            .min(u16::MAX as usize) as u16;
+        app.modal_max_scroll.set(max);
+        frame.render_widget(block, rect);
+        frame.render_widget(paragraph.scroll((app.modal_scroll.min(max), 0)), inner);
     }
 }
 
 pub fn menu_area(area: Rect, count: usize) -> Rect {
-    let w = area.width.saturating_sub(4).min(72);
-    let h = area.height.saturating_sub(2).min((count + 7) as u16);
+    let w = area
+        .width
+        .saturating_sub(if area.width >= 20 { 4 } else { 0 })
+        .min(82);
+    let h = area
+        .height
+        .saturating_sub(if area.height >= 10 { 2 } else { 0 })
+        .min((count.saturating_add(10).min(24)) as u16);
     Rect::new(
         area.x + (area.width - w) / 2,
         area.y + (area.height - h) / 2,
@@ -192,55 +218,147 @@ pub fn menu_area(area: Rect, count: usize) -> Rect {
 }
 pub fn menu_list_area(area: Rect, count: usize) -> Rect {
     let outer = menu_area(area, count);
+    if outer.height < 8 {
+        return Block::bordered().inner(outer);
+    }
+    let top = if outer.height >= 14 { 4 } else { 3 };
+    let left = if outer.width >= 60 { 19 } else { 2 };
     Rect::new(
-        outer.x + 1,
-        outer.y + 3,
-        outer.width.saturating_sub(2),
-        outer.height.saturating_sub(7),
+        outer.x + left,
+        outer.y + top,
+        outer.width.saturating_sub(left + 2),
+        outer.height.saturating_sub(top + 5),
     )
+}
+pub fn menu_groups_area(area: Rect, count: usize) -> Rect {
+    let outer = menu_area(area, count);
+    if outer.width < 60 || outer.height < 8 {
+        return Rect::default();
+    }
+    let body = menu_list_area(area, count);
+    Rect::new(outer.x + 2, body.y, 14, body.height)
+}
+fn clipped(text: &str, width: u16) -> String {
+    let text = paths::line(text);
+    if Line::from(text.clone()).width() <= width as usize {
+        return text;
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let size = Span::raw(c.to_string()).width();
+        if used + size > width.saturating_sub(1) as usize {
+            break;
+        }
+        used += size;
+        out.push(c);
+    }
+    out.push('…');
+    out
 }
 fn command_menu(frame: &mut Frame, app: &App, menu: &super::menu::CommandMenu, theme: Theme) {
     let rows = menu.rows();
-    let outer = menu_area(frame.area(), rows.len());
-    let body = menu_list_area(frame.area(), rows.len());
+    let count = menu.display_height();
+    let outer = menu_area(frame.area(), count);
+    let body = menu_list_area(frame.area(), count);
+    let categories = menu_groups_area(frame.area(), count);
+    let muted = if app.no_color {
+        Color::Reset
+    } else {
+        Color::Gray
+    };
+    if !app.no_color {
+        for cell in &mut frame.buffer_mut().content {
+            cell.set_style(
+                Style::new()
+                    .fg(Color::DarkGray)
+                    .bg(Color::Reset)
+                    .remove_modifier(Modifier::BOLD | Modifier::REVERSED),
+            );
+        }
+    }
     frame.render_widget(Clear, outer);
     frame.render_widget(theme.block(menu.title.into(), true), outer);
-    frame.render_widget(
-        Paragraph::new(paths::line(&menu.context)).style(Style::new().fg(theme.muted)),
-        Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), 1),
-    );
-    let mut group = "";
+    let groups = menu.groups();
+    let group = menu.group_index();
+    if outer.height >= 8 {
+        frame.render_widget(
+            Paragraph::new(clipped(&menu.subtitle, outer.width.saturating_sub(4)))
+                .style(Style::new().fg(muted)),
+            Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), 1),
+        );
+        if outer.height >= 14 {
+            frame.render_widget(
+                Paragraph::new(clipped(&menu.context, outer.width.saturating_sub(4)))
+                    .style(Style::new().bold()),
+                Rect::new(outer.x + 2, outer.y + 2, outer.width.saturating_sub(4), 1),
+            );
+        }
+        let label = if categories.width > 0 {
+            format!(
+                "{}  {}/{}",
+                groups[group],
+                rows.iter()
+                    .position(|i| *i == Some(menu.selected))
+                    .unwrap_or(0)
+                    + 1,
+                rows.len()
+            )
+        } else {
+            format!("{}  ←→/Tab  {}/{}", groups[group], group + 1, groups.len())
+        };
+        frame.render_widget(
+            Paragraph::new(clipped(&label, body.width)).style(Style::new().fg(theme.focus).bold()),
+            Rect::new(body.x, body.y.saturating_sub(1), body.width, 1),
+        );
+    }
+    if categories.width > 0 {
+        frame.render_widget(
+            Paragraph::new("Categories").style(Style::new().fg(muted)),
+            Rect::new(categories.x, categories.y - 1, categories.width, 1),
+        );
+        let mut state = ListState::default().with_selected(Some(group));
+        frame.render_stateful_widget(
+            List::new(groups.iter().map(|g| ListItem::new(*g)))
+                .highlight_symbol("▸ ")
+                .highlight_style(Style::new().fg(theme.focus).bold()),
+            categories,
+            &mut state,
+        );
+        app.menu_group_offset.set(state.offset());
+        frame.render_widget(
+            Paragraph::new((0..body.height).map(|_| "│").collect::<Vec<_>>().join("\n"))
+                .style(Style::new().fg(theme.muted)),
+            Rect::new(body.x.saturating_sub(2), body.y, 1, body.height),
+        );
+    }
     let items = rows
         .iter()
-        .enumerate()
-        .map(|(row, item)| {
-            if let Some(i) = item {
-                let a = &menu.actions[*i];
-                group = a.group;
-                ListItem::new(Line::from(vec![
-                    Span::raw(format!(
-                        "{:<width$}",
-                        a.label
-                            .chars()
-                            .take(body.width.saturating_sub(12) as usize)
-                            .collect::<String>(),
-                        width = body.width.saturating_sub(12) as usize
-                    )),
-                    Span::styled(a.shortcut, Style::new().fg(theme.muted)),
-                ]))
-                .style(if a.enabled {
-                    Style::new()
-                } else {
-                    Style::new().fg(theme.muted)
-                })
+        .filter_map(|i| *i)
+        .map(|i| {
+            let a = &menu.actions[i];
+            let key = format!("[{}]", a.shortcut);
+            let width = body.width.saturating_sub(key.len() as u16 + 4);
+            let label = clipped(
+                &format!("{}{}", if a.enabled { "" } else { "– " }, a.label),
+                width,
+            );
+            let pad = width as usize - Line::from(label.clone()).width();
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{label}{} ", " ".repeat(pad))),
+                Span::styled(
+                    key,
+                    Style::new().fg(if a.enabled { theme.focus } else { muted }),
+                ),
+            ]))
+            .style(if a.enabled {
+                Style::new()
             } else {
-                let heading = rows
-                    .iter()
-                    .skip(row + 1)
-                    .find_map(|i| i.map(|i| menu.actions[i].group))
-                    .unwrap_or(group);
-                ListItem::new(Line::styled(heading, Style::new().fg(theme.focus).bold()))
-            }
+                Style::new().fg(muted)
+            })
         })
         .collect::<Vec<_>>();
     let selected = rows
@@ -256,22 +374,34 @@ fn command_menu(frame: &mut Frame, app: &App, menu: &super::menu::CommandMenu, t
         &mut state,
     );
     app.menu_offset.set(state.offset());
-    if outer.height >= 7 {
-        let description = menu
-            .actions
-            .get(menu.selected)
-            .map(|a| {
-                if a.enabled {
-                    a.description
-                } else {
-                    "Action unavailable for this selection."
-                }
-            })
-            .unwrap_or("");
+    if outer.height >= 8 {
+        let selected = menu.actions.get(menu.selected);
+        let description = menu.notice.as_deref().unwrap_or_else(|| {
+            selected
+                .map(|a| {
+                    if a.enabled {
+                        a.description
+                    } else {
+                        a.disabled_reason
+                    }
+                })
+                .unwrap_or("")
+        });
+        let warning = menu.notice.is_some() || selected.is_some_and(|a| !a.enabled);
+        frame.render_widget(
+            Paragraph::new("─".repeat(outer.width.saturating_sub(4) as usize))
+                .style(Style::new().fg(theme.muted)),
+            Rect::new(
+                outer.x + 2,
+                outer.bottom() - 5,
+                outer.width.saturating_sub(4),
+                1,
+            ),
+        );
         frame.render_widget(
             Paragraph::new(description)
                 .wrap(Wrap { trim: false })
-                .style(Style::new().fg(theme.muted)),
+                .style(Style::new().fg(if warning { theme.warning } else { muted })),
             Rect::new(
                 outer.x + 2,
                 outer.bottom() - 4,
@@ -280,7 +410,12 @@ fn command_menu(frame: &mut Frame, app: &App, menu: &super::menu::CommandMenu, t
             ),
         );
         frame.render_widget(
-            Paragraph::new("↑↓ choose   Enter run   Esc close"),
+            Paragraph::new(if outer.width < 50 {
+                "Tab groups  ↑↓ move  ↵ run  Esc"
+            } else {
+                "Tab/←→ groups   ↑↓ choose   Enter run   Esc close"
+            })
+            .style(Style::new().fg(theme.focus)),
             Rect::new(
                 outer.x + 2,
                 outer.bottom() - 2,
@@ -292,46 +427,41 @@ fn command_menu(frame: &mut Frame, app: &App, menu: &super::menu::CommandMenu, t
 }
 
 fn projects(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
-    let projects = app.projects();
-    // First row is the virtual "everything" project; the rest are real
-    // folders. Counts are catalog totals, never filtered by the current view,
-    // so history does not misleadingly read as zero while browsing resume.
-    let mut items = vec![ListItem::new(format!(
-        "All projects  {}",
-        app.catalog.sessions.len()
-    ))];
-    for cwd in projects {
-        let name = project_label(cwd);
-        let label = if projects.iter().filter(|c| project_label(c) == name).count() > 1 {
-            std::path::Path::new(cwd)
-                .parent()
-                .map(|p| format!("{name} ({})", project_name(&p.to_string_lossy())))
-                .unwrap_or(name)
+    let total = app.catalog.sessions.len();
+    let shown = app
+        .catalog
+        .sessions
+        .iter()
+        .filter(|s| app.view.matches(s))
+        .count();
+    let count = if shown == total {
+        total.to_string()
+    } else {
+        format!("{shown}/{total}")
+    };
+    let mut items = vec![ListItem::new(format!("All projects  {count}"))];
+    for (i, row) in app.project_tree.rows.iter().enumerate() {
+        let count = if row.shown == row.total {
+            row.total.to_string()
         } else {
-            name
+            format!("{}/{}", row.shown, row.total)
         };
-        let count = app
-            .catalog
-            .sessions
-            .iter()
-            .filter(|s| s.metadata.cwd == *cwd)
-            .count();
-        let total = if count > 0 {
-            count.to_string()
-        } else if app.catalog.unbound.iter().any(|p| p.cwd == *cwd) {
-            "Open agent".into()
-        } else if app.catalog.scanning {
-            "…".into()
-        } else {
-            "0".into()
-        };
-        items.push(ListItem::new(format!("{}  {total}", paths::line(&label))));
+        let label = app.project_tree.label(i);
+        let max = area.width.saturating_sub(count.len() as u16 + 6) as usize;
+        let label = label.chars().take(max).collect::<String>();
+        let padding = max.saturating_sub(Line::from(label.clone()).width());
+        items.push(ListItem::new(Line::from(vec![
+            Span::raw(label),
+            Span::styled(
+                format!("{}  {count}", " ".repeat(padding)),
+                Style::new().fg(theme.muted),
+            ),
+        ])));
     }
     let selected = app
         .project
         .as_ref()
-        .and_then(|p| projects.iter().position(|c| c == p))
-        .map(|i| i + 1)
+        .and_then(|p| app.visible_project_row(p))
         .unwrap_or(0);
     let mut state = ListState::default().with_selected(Some(if app.panel == Panel::Projects {
         app.project_row
@@ -340,14 +470,26 @@ fn projects(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     }));
     frame.render_stateful_widget(
         List::new(items)
-            .block(theme.block(
-                if app.view == crate::model::View::All {
-                    "Projects".into()
-                } else {
-                    format!("Projects · {} filter · f", app.view.label())
-                },
-                app.panel == Panel::Projects && !app.editing_search,
-            ))
+            .block(
+                theme
+                    .block(
+                        format!(
+                            "Projects{} · {} · {}",
+                            if app.view == crate::model::View::All {
+                                String::new()
+                            } else {
+                                format!(" · {}", app.view.label())
+                            },
+                            app.project_options.layout.label(),
+                            app.project_options.order.label()
+                        ),
+                        app.panel == Panel::Projects && !app.editing_search,
+                    )
+                    .title_bottom(Line::styled(
+                        format!(" {} ", app.project_tree.root),
+                        Style::new().fg(theme.muted),
+                    )),
+            )
             .highlight_style(theme.selection)
             .highlight_symbol("› "),
         area,
@@ -394,11 +536,11 @@ fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
                 // [~] a probable title/folder hint. Same visual language
                 // as [R], readable without color and without a legend hunt.
                 let mark = if !s.bindings.is_empty() {
-                    "[O] "
+                    "[O]"
                 } else if !s.probable.is_empty() {
-                    "[~] "
+                    "[~]"
                 } else {
-                    "    "
+                    ""
                 };
                 let label = if app.project.is_none() {
                     format!(
@@ -410,31 +552,29 @@ fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
                     s.metadata.title()
                 };
                 let resume = if s.state == crate::model::ResumeState::Resume {
-                    "[R] "
+                    "[R]"
                 } else {
                     ""
                 };
                 ListItem::new(Line::from(vec![
-                    Span::raw(mark),
+                    Span::raw(format!("[{}]", s.metadata.provider.label())),
                     Span::styled(resume, Style::new().fg(theme.focus).bold()),
-                    Span::raw(
-                        if s.metadata.provider == crate::model::Provider::Pi
-                            && !s.id.starts_with("pane-")
-                        {
-                            paths::line(&label)
-                        } else {
-                            format!(
-                                "[{}] {}{}",
-                                s.metadata.provider.label(),
-                                if s.id.starts_with("pane-") {
-                                    "live terminal · "
-                                } else {
-                                    ""
-                                },
-                                paths::line(&label)
-                            )
-                        },
+                    Span::raw(mark),
+                    Span::styled(
+                        s.live_activity()
+                            .map(|a| format!(" [{}]", a.label()))
+                            .unwrap_or_default(),
+                        activity_style(s.live_activity(), theme, app.no_color),
                     ),
+                    Span::raw(format!(
+                        " {}{}",
+                        if s.id.starts_with("pane-") {
+                            "live terminal · "
+                        } else {
+                            ""
+                        },
+                        paths::line(&label)
+                    )),
                 ]))
             })
             .collect::<Vec<_>>();
@@ -498,6 +638,24 @@ fn sessions(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
 
 /// One-line label for an unbound agent pane: agent, title, activity.
 /// Activity words are lowercase Herdr-style guesses, never facts.
+fn activity_style(
+    state: Option<crate::activity::AgentActivity>,
+    theme: Theme,
+    no_color: bool,
+) -> Style {
+    use crate::activity::AgentActivity::*;
+    let color = if no_color {
+        Color::Reset
+    } else {
+        match state {
+            Some(Working) => theme.focus,
+            Some(Finished) => Color::Green,
+            Some(Blocked | Waiting | Error) => theme.warning,
+            _ => Color::Gray,
+        }
+    };
+    Style::new().fg(color).bold()
+}
 pub fn unbound_label(pane: &crate::tmux::PaneIdentity) -> String {
     let agent = pane.provider.map(|p| p.label()).unwrap_or("agent");
     let activity = pane
@@ -542,6 +700,30 @@ fn detail(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
             Style::new().fg(theme.muted),
         )),
     ];
+    if let Some(state) = session.live_activity() {
+        lines.push(Line::styled(
+            format!("Live activity: {} · inferred from terminal", state.label()),
+            activity_style(Some(state), theme, app.no_color),
+        ));
+        if state == crate::activity::AgentActivity::Finished {
+            lines.push(Line::styled(
+                "Turn appears finished; the saved work decision is unchanged.",
+                Style::new().fg(theme.muted),
+            ));
+        }
+    }
+    for pane in session.openings() {
+        if let (Some(provider), Some(state), Some(evidence)) = (
+            pane.provider,
+            pane.activity,
+            pane.activity_evidence.as_ref(),
+        ) {
+            lines.push(Line::styled(
+                crate::activity::describe(provider, state, evidence),
+                Style::new().fg(theme.muted),
+            ));
+        }
+    }
     if !session.probable.is_empty() {
         lines.push(Line::styled(
             format!(
@@ -558,18 +740,6 @@ fn detail(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
             },
             Style::new().fg(theme.muted),
         ));
-        // Screen activity for probable panes, with provenance: a guess
-        // from terminal text, never a verified opening.
-        for pane in &session.probable {
-            if let (Some(provider), Some(state)) = (pane.provider, pane.activity)
-                && let Some(evidence) = &pane.activity_evidence
-            {
-                lines.push(Line::styled(
-                    crate::activity::describe(provider, state, evidence),
-                    Style::new().fg(theme.muted),
-                ));
-            }
-        }
     }
     for binding in &session.bindings {
         if let Some(pane) = &binding.pane {
@@ -745,6 +915,70 @@ mod tests {
         app
     }
     #[test]
+    fn live_states_are_visible_in_rows_without_hiding_resume_or_changing_notes() {
+        use crate::activity::{AgentActivity, MatchEvidence};
+        let mut app = fixture();
+        for (s, state) in app.catalog.sessions.iter_mut().zip([
+            AgentActivity::Working,
+            AgentActivity::Finished,
+            AgentActivity::Waiting,
+            AgentActivity::Error,
+            AgentActivity::Unknown,
+        ]) {
+            s.probable.push(crate::tmux::PaneIdentity {
+                socket: "/fake".into(),
+                server: "s".into(),
+                pane: "%1".into(),
+                pane_pid: 1,
+                pane_start: "start".into(),
+                client_pid: 2,
+                client_start: "start".into(),
+                target: "fixture:1.0".into(),
+                session: "fixture".into(),
+                window: "1".into(),
+                cwd: s.metadata.cwd.clone(),
+                command: "pi".into(),
+                title: s.metadata.name.clone(),
+                provider: Some(Provider::Pi),
+                activity: Some(state),
+                activity_evidence: Some(MatchEvidence {
+                    rule_id: "synthetic".into(),
+                    manifest_source: "bundled".into(),
+                    manifest_version: 2,
+                    ..Default::default()
+                }),
+            });
+        }
+        app.refresh_filter();
+        for no_color in [false, true] {
+            app.no_color = no_color;
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+            terminal.draw(|f| draw(f, &app)).unwrap();
+            let text = snapshot_text(terminal.backend().buffer(), 160, 40);
+            for label in ["working", "finished", "waiting", "error", "unknown"] {
+                assert!(text.contains(&format!("[pi][R][~] [{label}]")));
+            }
+            if no_color {
+                assert!(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .all(|c| c.fg == Color::Reset && c.bg == Color::Reset)
+                );
+            }
+        }
+        app.search = "finished".into();
+        app.refresh_filter();
+        assert_eq!(app.rows().len(), 1);
+        assert_eq!(app.current().unwrap().state, ResumeState::Resume);
+        assert_eq!(
+            app.catalog.sessions[0].note,
+            "Check the hero spacing in a real browser."
+        );
+    }
+    #[test]
     fn unbound_labels_show_agent_and_activity_word() {
         use crate::activity::AgentActivity;
         use crate::tmux::PaneIdentity;
@@ -874,7 +1108,7 @@ mod tests {
                 .iter()
                 .find(|line| line.contains("website-redesign") && line.contains(badge))
                 .unwrap();
-            assert!(row.contains(badge));
+            assert!(row.contains("[pi][R]"));
             assert!(!row.contains("[~]") && !row.contains("[O]"));
             for name in ["release-notes", "api-migration"] {
                 assert!(
@@ -934,7 +1168,7 @@ mod tests {
         assert!(text.contains("All · 4"));
     }
     #[test]
-    fn project_counts_include_history_even_in_resume_view() {
+    fn project_counts_distinguish_matching_rows_from_total_history() {
         let mut app = fixture();
         for session in &mut app.catalog.sessions {
             session.state = crate::model::ResumeState::History;
@@ -951,9 +1185,10 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(text.contains("Acme Website"));
+        assert!(text.contains("All projects  0/5"));
         assert!(text.contains("Search projects"));
         assert!(app.visible.is_empty());
+        assert!(app.projects().is_empty());
         // Entering search clears the placeholder before the first keystroke,
         // so the cursor never renders inside the hint text.
         app.editing_search = true;
@@ -968,6 +1203,41 @@ mod tests {
             .collect::<String>();
         assert!(!editing_text.contains("Name or folder"));
         assert!(editing_text.contains("Search projects"));
+    }
+    #[test]
+    fn every_saved_provider_has_an_agent_badge_with_or_without_resume() {
+        let mut app = fixture();
+        app.project = Some("/repo/acme-website".into());
+        for (i, provider) in [
+            Provider::Pi,
+            Provider::Claude,
+            Provider::Codex,
+            Provider::Opencode,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.catalog.sessions[i].metadata.provider = provider;
+            app.catalog.sessions[i].state = if i == 0 {
+                ResumeState::Resume
+            } else {
+                ResumeState::History
+            };
+        }
+        app.refresh_filter();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("[pi][R]"));
+        for provider in ["claude", "codex", "opencode"] {
+            assert!(text.contains(&format!("[{provider}]")));
+        }
     }
     #[test]
     fn no_color_still_has_visible_selection() {
@@ -992,6 +1262,19 @@ mod tests {
                 .any(|c| c.modifier.contains(Modifier::REVERSED))
         );
     }
+    fn snapshot_text(buffer: &ratatui::buffer::Buffer, w: u16, h: u16) -> String {
+        // Trailing blank cells carry no visual meaning; keep fixtures diff-clean.
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+                    + "\n"
+            })
+            .collect()
+    }
     #[test]
     fn readable_contextual_action_menus() {
         for (w, h) in [(40, 12), (80, 24), (120, 32)] {
@@ -1004,18 +1287,70 @@ mod tests {
                 let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
                 terminal.draw(|f| draw(f, &app)).unwrap();
                 let buffer = terminal.backend().buffer();
-                let text = (0..h)
-                    .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n")
-                    .collect::<String>();
+                let text = snapshot_text(buffer, w, h);
                 let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join(format!("tests/snapshots/menu-{panel:?}-{w}x{h}.txt"));
                 if std::env::var("UPDATE_LAYOUT_SNAPSHOTS").as_deref() == Ok("1") {
                     std::fs::write(&path, &text).unwrap();
                 }
                 assert_eq!(text, std::fs::read_to_string(path).unwrap());
-                assert!(text.contains("↑↓ choose"));
-                assert!(text.contains("Refresh the catalog"));
+                assert!(text.contains("↑↓"));
+                assert!(text.contains("Refresh catalog"));
             }
+        }
+    }
+    #[test]
+    fn live_action_menu_is_legible_compact_and_clips_context_in_terminal_cells() {
+        for (w, h) in [(40, 12), (80, 24), (120, 32)] {
+            let mut app = fixture();
+            app.catalog.sessions[0].id = "pane-synthetic".into();
+            app.catalog.sessions[0].metadata.provider = Provider::Claude;
+            app.catalog.sessions[0].metadata.name =
+                "Review the navigation and accessibility of the synthetic website mockup 界界界"
+                    .into();
+            app.select(0);
+            let mut menu = super::super::menu::CommandMenu::new(&app);
+            menu.selected = menu
+                .actions
+                .iter()
+                .position(|a| a.key == crossterm::event::KeyCode::Char('n'))
+                .unwrap();
+            assert!(!menu.actions[menu.selected].enabled);
+            let count = menu.display_height();
+            app.command_menu = Some(menu);
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            terminal.draw(|f| draw(f, &app)).unwrap();
+            let text = snapshot_text(terminal.backend().buffer(), w, h);
+            assert!(text.contains("Saved session required"));
+            assert!(text.contains("[n]"));
+            if w >= 80 {
+                assert!(text.contains("Categories"));
+                assert!(text.contains('…'));
+            }
+            assert!(menu_area(Rect::new(0, 0, w, h), count).height <= 24);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("tests/snapshots/actions-live-{w}x{h}.txt"));
+            if std::env::var("UPDATE_LAYOUT_SNAPSHOTS").as_deref() == Ok("1") {
+                std::fs::write(&path, &text).unwrap();
+            }
+            assert_eq!(text, std::fs::read_to_string(path).unwrap());
+            app.no_color = true;
+            terminal.draw(|f| draw(f, &app)).unwrap();
+            assert!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .all(|c| c.fg == Color::Reset && c.bg == Color::Reset)
+            );
+        }
+        assert_eq!(clipped("界界界", 5), "界界…");
+        for (w, h) in [(1, 1), (4, 3), (16, 6)] {
+            let mut app = fixture();
+            app.command_menu = Some(super::super::menu::CommandMenu::new(&app));
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            terminal.draw(|f| draw(f, &app)).unwrap();
         }
     }
     #[test]
@@ -1052,15 +1387,54 @@ mod tests {
         );
     }
     #[test]
+    fn project_layout_and_folding_snapshots() {
+        for (w, h) in [(40, 12), (80, 24)] {
+            for variant in ["collapsed", "flat", "recent"] {
+                let mut app = fixture();
+                app.panel = Panel::Projects;
+                for (id, cwd, updated) in [
+                    ("api", "/repo/acme-website/api", 20),
+                    ("tests", "/repo/acme-website/api/tests", 30),
+                    ("tools", "/repo/tooling", 50),
+                ] {
+                    let mut s = app.catalog.sessions[0].clone();
+                    s.id = id.into();
+                    s.metadata.cwd = cwd.into();
+                    s.metadata.updated = updated;
+                    app.catalog.sessions.push(s);
+                }
+                app.refresh_filter();
+                match variant {
+                    "collapsed" => app.fold_all_projects(true),
+                    "flat" => app.toggle_project_layout(),
+                    _ => app.toggle_project_order(),
+                }
+                let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+                terminal.draw(|f| draw(f, &app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = snapshot_text(buffer, w, h);
+                assert!(text.contains(match variant {
+                    "collapsed" => "▸",
+                    "flat" => "Flat",
+                    _ => "Recent",
+                }));
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("tests/snapshots/projects-{variant}-{w}x{h}.txt"));
+                if std::env::var("UPDATE_LAYOUT_SNAPSHOTS").as_deref() == Ok("1") {
+                    std::fs::write(&path, &text).unwrap();
+                }
+                assert_eq!(text, std::fs::read_to_string(path).unwrap());
+            }
+        }
+    }
+    #[test]
     fn readable_layouts() {
         for (w, h) in [(40, 12), (80, 24), (120, 32), (160, 40)] {
             let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
             let app = fixture();
             terminal.draw(|f| draw(f, &app)).unwrap();
             let buffer = terminal.backend().buffer();
-            let text = (0..h)
-                .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n")
-                .collect::<String>();
+            let text = snapshot_text(buffer, w, h);
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("tests/snapshots/layout-{w}x{h}.txt"));
             if std::env::var("UPDATE_LAYOUT_SNAPSHOTS").as_deref() == Ok("1") {

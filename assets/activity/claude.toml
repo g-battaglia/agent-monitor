@@ -1,12 +1,60 @@
-# Bundled screen-detection manifest for Claude (v1).
-manifest_version = 1
+# Independent scoped rules informed by Herdr; not a copy of its engine/schema.
+# https://herdr.dev/docs/agents
+manifest_version = 2
 
 [[rule]]
 id = "permission-prompt"
 state = "blocked"
-screen_any = ["Approve", "Allow", "accept?", "(y/n)", "[y/n]", "Yes, proceed", "Proceed?"]
+priority = 1000
+bottom_non_empty_lines = 12
+case_insensitive = true
+screen_all = ["esc to cancel"]
+screen_any = ["yes, proceed", "allow", "approve", "1. yes", "accept", "run a dynamic workflow?"]
 
 [[rule]]
-id = "spinner"
+id = "input-dialog"
+state = "waiting"
+priority = 990
+bottom_non_empty_lines = 12
+case_insensitive = true
+screen_all = ["esc to cancel"]
+screen_any = ["enter to select", "enter to confirm", "enter to submit"]
+
+[[rule]]
+id = "title-spinner"
 state = "working"
-screen_any = ["Working", "Thinking", "esc to interrupt", "Esc to interrupt", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+priority = 750
+title_spinner = true
+
+[[rule]]
+id = "interrupt-status"
+no_later_response = true
+state = "working"
+priority = 700
+bottom_non_empty_lines = 12
+case_insensitive = true
+line_starts_any = ["✻", "✶", "✽", "✢", "⏸", "⏵", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "Working", "Thinking"]
+screen_any = ["esc to interrupt", "ctrl+c to interrupt"]
+
+[[rule]]
+id = "background-agents"
+state = "working"
+priority = 700
+bottom_non_empty_lines = 12
+line_starts_any = ["Waiting for "]
+screen_all = ["background agents to finish"]
+
+[[rule]]
+id = "api-error"
+state = "error"
+priority = 500
+bottom_non_empty_lines = 8
+line_starts_any = ["API Error:", "API error:", "Rate limit exceeded", "Authentication failed", "Unable to connect to API", "Request failed"]
+
+[[rule]]
+id = "composer"
+state = "idle"
+priority = 100
+bottom_non_empty_lines = 6
+line_starts_any = ["❯"]
+screen_none = ["esc to cancel", "enter to select", "arrow keys to navigate"]

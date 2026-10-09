@@ -1,24 +1,24 @@
 ╭ Search projects ─────────────────────────────────────────────────────────────╮
 │Name or folder…  / or Ctrl-f                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╭ Pr╭ Project commands ────────────────────────────────────────────────────╮───╮
-│› A│ All projects                                                         │   │
-│  A│                                                                      │   │
-│   │  Find                                                                │   │
-│   │  Search projects                                           /         │   │
-│   │  Project                                                             │   │
-│   │  Open the selected project                                 Enter     │   │
-│   │  Navigate                                                            │   │
-│   │  Change view                                               f         │   │
-│   │  Pick another project                                      p         │   │
-│   │  Browse open agent runs                                    o         │   │
-│   │  Move to the next panel                                    Tab       │   │
-│   │  Catalog                                                             │   │
-│   │› Refresh the catalog                                       R         │   │
-│   │ Re-read names, conversations, and openings without starting agents.  │   │
-│   │                                                                      │   │
-│   │ ↑↓ choose   Enter run   Esc close                                    │   │
-│   ╰──────────────────────────────────────────────────────────────────────╯   │
-╰──────────────────────────────╯╰──────────────────────────────────────────────╯
-Enter pick project   Tab sessions   / search   ? actions                        
-                                                                                
+╭ Projects · Tree · A–Z ───────╮╭ Acme Website / website-redesign ─────────────╮
+│›╭ Project actions ─────────────────────────────────────────────────────────╮ │
+│ │ All view · Tree · A–Z                                                    │ │
+│ │ All projects                                                             │ │
+│ │ Categories       Catalog 1/1                                             │ │
+│ │   Find         │ › Refresh catalog                                  [R]  │ │
+│ │   Project      │                                                         │ │
+│ │   Folders      │                                                         │ │
+│ │   Navigate     │                                                         │ │
+│ │ ▸ Catalog      │                                                         │ │
+│ │                │                                                         │ │
+│ │ ──────────────────────────────────────────────────────────────────────── │ │
+│ │ Re-read names, conversations, and openings without starting agents.      │ │
+│ │                                                                          │ │
+│ │ Tab/←→ groups   ↑↓ choose   Enter run   Esc close                        │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                              ││                                              │
+│                              ││                                              │
+╰ /repo ───────────────────────╯╰──────────────────────────────────────────────╯
+Space fold  E/C all  v tree/flat  s sort  Enter pick  ? actions
+

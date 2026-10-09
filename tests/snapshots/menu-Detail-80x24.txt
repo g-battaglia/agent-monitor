@@ -1,24 +1,24 @@
 ╭ Search the page text ────────────────────────────────────────────────────────╮
-│Tex╭ Conversation commands ───────────────────────────────────────────────╮   │
-╰───│ Acme Website / website-redesign                                      │───╯
-╭ Al│                                                                      │───╮
-│›  │  Undo the last change                                      u         │   │
-│   │  Show file info                                            i         │   │
-│   │  Reading                                                             │   │
-│   │  Expand the conversation                                   z         │   │
-│   │  Choose a conversation branch                              b         │   │
-│   │  Show or hide tools                                        t         │   │
-│   │  Read the older page                                       [         │   │
-│   │  Read the newer page                                       ]         │   │
-│   │  Navigate                                                            │   │
-│   │  Change view                                               f         │   │
-│   │  Pick another project                                      p         │   │
-│   │  Browse open agent runs                                    o         │   │
-│   │  Move to the next panel                                    Tab       │   │
-│   │  Catalog                                                             │   │
-│   │› Refresh the catalog                                       R         │   │
-│   │ Re-read names, conversations, and openings without starting agents.  │   │
-│   │                                                                      │   │
-╰───│ ↑↓ choose   Enter run   Esc close                                    │───╯
-r to╰──────────────────────────────────────────────────────────────────────╯    
-                                                                                
+│Text to find…  / or Ctrl-f                                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ All · 5 ─────────────────────╮╭ Acme Website / website-redesign ─────────────╮
+│›╭ Conversation actions ────────────────────────────────────────────────────╮ │
+│ │ [pi] To resume · Acme Website                                            │ │
+│ │ website-redesign                                                         │ │
+│ │ Categories       Catalog 1/1                                             │ │
+│ │   Find         │ › Refresh catalog                                  [R]  │ │
+│ │   Session      │                                                         │ │
+│ │   Reading      │                                                         │ │
+│ │   Folders      │                                                         │ │
+│ │   Navigate     │                                                         │ │
+│ │ ▸ Catalog      │                                                         │ │
+│ │                │                                                         │ │
+│ │ ──────────────────────────────────────────────────────────────────────── │ │
+│ │ Re-read names, conversations, and openings without starting agents.      │ │
+│ │                                                                          │ │
+│ │ Tab/←→ groups   ↑↓ choose   Enter run   Esc close                        │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                              ││                                              │
+╰──────────────────────────────╯╰──────────────────────────────────────────────╯
+r to resume   j/k scroll   [ ] pages   / search   z expand   ? actions
+

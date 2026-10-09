@@ -3,13 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)](#)
-[![Tests](https://img.shields.io/badge/Tests-57%20passing-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/Tests-80%20passing-green.svg)](#development)
 
-A terminal session explorer for coding agents (Pi, Claude, Codex,
-OpenCode). Browse past conversations by project, preview the full
-exchange, and resume exactly where work stopped — from the TUI or from
-scripts. A lightweight, independent tmux-native alternative to bloated
-agent dashboards.
+An independent tmux monitor and session explorer for **Claude Code,
+Codex, OpenCode, and Pi**. See which agents are running, browse project
+folders and conversation history, and resume unfinished work from a
+lazygit-style TUI or the CLI. Local, offline, and built around the Unix
+philosophy — not a replacement for your terminal workflow.
 
 ![agent-monitor tmux session explorer and coding agent monitor TUI](assets/screenshot.png)
 
@@ -28,10 +28,10 @@ mandatory extension, or workspace manager is needed.
 
 | Agent | Local history | Explicit resume command |
 |---|---|---|
-| Pi | `~/.pi/agent/sessions` (JSONL v3) | `pi --session <file>` |
 | Claude Code | `~/.claude/projects` (JSONL) | `claude --resume <id>` |
 | OpenAI Codex | `~/.codex/sessions` (rollout JSONL) | `codex resume <id>` |
 | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite) | `opencode --session <id>` |
+| Pi | `~/.pi/agent/sessions` (JSONL v3) | `pi --session <file>` |
 
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_DATA_HOME` override the
 corresponding default locations. Pi also supports custom session roots.
@@ -64,9 +64,11 @@ conversation and resume it.
 - **Text in, text out.** Every workflow step is a CLI command with JSON
   output. Pipe it into `jq`, `fzf`, or your own scripts.
 
-The screen-activity detection is inspired by Herdr's manifests
-(`working/idle/blocked/unknown` from terminal output, no plugin), minus
-the server and remote manifest updates.
+The independently implemented screen detector follows
+[Herdr's documented live-terminal approach](https://herdr.dev/docs/agents):
+scoped rules, prioritized approval/working signals, and explicit fallbacks.
+It adds a memory-only working → stable idle transition for **finished**;
+no server, remote manifest updates, or mandatory plugin is needed.
 
 ## Features
 
@@ -77,7 +79,7 @@ the server and remote manifest updates.
   decisions; activity or idleness never changes them implicitly.
 - **Live pane awareness.** Verified extension records (`[O]`), passive
   title/folder hints (`[~]`), and screen-inferred activity
-  (`working/idle/blocked/unknown`) distinguish proven openings from
+  (`working/finished/idle/waiting/blocked/error/unknown`) distinguish proven openings from
   guesses. Duplicate names are never associated arbitrarily; screen
   state never changes stored work state.
 - **Safe resume.** Reopening a closed session uses exact argv
@@ -117,13 +119,48 @@ cargo build --release --locked
 ./target/release/agent-monitor
 ```
 
-It opens on **All** sessions. Type `/` to search, `Enter` to open a
-project or jump to a session, `f` to switch views (All, To resume, Open,
-Done), `?` for the contextual action menu. Selecting **All projects**
-with `Enter` resets the view to All and clears project/session search
-filters. While filtering, the list shows visible/total counts and the
-project panel names the active view. `R` refreshes; it does not clear filters.
-Search for `claude`, `codex`, `pi`, or `opencode` to find that agent's rows.
+It always opens on **All projects / Open**, regardless of the current
+folder or saved filters. `pick --project` explicitly selects a project.
+Type `/` to search, `Enter` to open a project or jump to a session, `f` to
+switch views (All, To resume, Open, Done), and `?` for the contextual action menu.
+The menu shows one category at a time: `Tab` / `Shift-Tab` or `←/→`
+changes category; `↑/↓` selects an action and `Enter` runs it. Direct
+shortcuts work across categories. Click a category or action with the mouse,
+or click outside / press `Esc` to close. Disabled actions remain readable
+and explain why they are unavailable (for example, live-only terminals
+cannot store notes or decisions). Narrow terminals use a compact category
+selector; context text is clipped with an ellipsis rather than overflowing.
+Selecting **All projects** clears project/session search but keeps the
+current view; choose `f` → All to browse the complete history.
+
+The Projects panel follows the active view and displays a folder tree,
+not ambiguous duplicate-name suffixes. Its lower border shows the common
+root; nested project folders are indented. Counts show matching/total
+sessions. Empty folder metadata is labeled **Unknown folder**, never
+shown as a blank project. `i` opens scrollable **Details** for the
+highlighted project or session, including the full folder and history storage.
+In **Projects** (`1` to focus), `Space` toggles the highlighted branch;
+`←/→` fold or navigate it. Click its `▸/▾` triangle to toggle with the mouse.
+`C` collapses all branches, `E` expands all; both switch to Tree if needed.
+`Space` on **All projects** toggles all branches. Closed branches show how
+many project folders are hidden. Ancestor folder groups (names ending `/`)
+remain visible in Open even without saved conversations of their own;
+`Enter` toggles a group instead of changing project scope. `i` summarizes
+all its nested projects. These are navigation folders, never invented sessions.
+`v` switches between **Tree** and the original-style **Flat** list; `s`
+switches **A–Z / Recent**. `v/s/E/C` work from every panel outside search input
+and focus Projects; Flat omits ancestor groups. The panel title shows both choices; all controls
+are also in `?`. Recent means latest saved exchange, not inferred activity:
+tree siblings use the newest saved update anywhere in their branch, while flat
+sorts each individual project. Unknown live-only timestamps never imply recency;
+the status line reports how many matching projects have known saved updates. Duplicate flat names include their parent path.
+Project search reveals matches inside closed branches without forgetting folds.
+Layout, order, and folds last for the current monitor run and never change
+the active project, session view, notes, or work decisions.
+
+Every session has an agent badge, such as `[pi][R]` or `[claude][~]`.
+`R` refreshes without changing filters. Search for `claude`, `codex`, `pi`,
+or `opencode` to find that agent's rows.
 
 Jump directly to one project:
 
@@ -147,6 +184,9 @@ python3 scripts/screenshot.py
 |---|---|
 | `j/k`, arrows | Move or scroll |
 | `h/l`, `Tab` | Switch panel |
+| `Space`, `←/→` in Projects | Toggle or navigate a branch |
+| `E` / `C` | Expand / collapse all branches (switches to Tree) |
+| `v` / `s` | Tree/flat layout / alphabetical/recent order |
 | `Enter` | Open the pane, or offer to resume |
 | `f` / `p` | Change view / pick project |
 | `r` / `d` | Mark to resume / done |
@@ -155,9 +195,11 @@ python3 scripts/screenshot.py
 | `z` | Expand the conversation |
 | `[` / `]` | Older / newer pages |
 | `b` / `t` | Branches / tool output |
-| `o` / `i` | Browse open panes / file info |
+| `o` / `i` | Browse open panes / project or session Details |
 | `gg`, `G`, `Ctrl-d/u` | Jump to ends, half pages |
 | `Esc`, `?`, `q` | Back, actions, quit (monitor only) |
+
+![Contextual action menu with readable disabled-action reasons](assets/actions.png)
 
 ## CLI reference
 
@@ -166,6 +208,9 @@ agent-monitor sessions --all --project acme-website
 agent-monitor sessions --open --json
 agent-monitor agent explain --file screen.txt --agent codex
 agent-monitor show <id>
+agent-monitor details <id>
+agent-monitor details --project acme-website --json
+agent-monitor details                       # all-project overview
 agent-monitor done <id>
 agent-monitor reopen <id>
 agent-monitor note <id> 'Check the timeout'
@@ -184,24 +229,59 @@ in scripts) and revalidates identity, folder, and presence before launch.
 `sessions --open --json` returns an object with `sessions` and `panes`,
 including unidentified agent terminals; other session listings return arrays.
 Live-only rows can be focused but cannot carry durable notes or Done decisions.
+`details` displays project/session metadata rather than transcript bodies;
+`details --project <folder>` includes every agent's sessions in that folder.
+In the TUI, `i` and the **Details** menu action show the same information.
+Use arrows, `j/k`, Page Up/Down, or the mouse wheel to scroll longer details.
 
 ## Live agent activity (no plugin)
 
 Every pane running a recognized agent (Pi, Claude, Codex, OpenCode)
 appears in the main All/Open list, the `o` picker, and `sessions --open`,
-with a screen-inferred state word (`working/idle/blocked/unknown`). Detection reads the live
-bottom of the pane (`tmux capture-pane`, read-only) and matches it
-against bundled per-agent manifests; `blocked` requires a known approval
-marker, and unmatched output falls back to `idle` (or `unknown` for
-Codex without a title signal). Captured text is matched in memory and
-dropped — never logged, never stored.
+with a live badge directly in the session row, for example
+`[pi][R][O] [working]` or `[claude][~] [finished]`. Verified Pi identity
+and inferred terminal activity are independent: both verified and probable
+openings are sampled. `i` / Details includes the state and its evidence.
+Search for `working`, `finished`, `waiting`, or another state to find matching rows.
+
+| Live state | Meaning |
+|---|---|
+| `working` | Recognized spinner, interrupt/status line, or title signal |
+| `finished` | Observed working, then at least two stable idle snapshots ≥1.5s apart |
+| `idle` | Ready/no recognized work; no completed turn was observed |
+| `blocked` | Recognized permission/approval UI |
+| `waiting` | Recognized interactive selection/question UI |
+| `error` | Recognized API/request failure; not a generic tool error |
+| `unknown` | No usable signal, empty snapshot, or capture unavailable |
+| `mixed` | Multiple openings of one conversation disagree |
+
+The worker samples about every two seconds. Detection uses only the current
+terminal viewport (`tmux capture-pane -S 0`), never scrollback, with scoped
+bottom nonempty lines and stale-response guards. Captured text is matched
+in memory and dropped — never logged or stored. Only bounded fingerprints
+and observation counters survive in memory for this monitor run. Process
+identity changes, verified Pi session-generation changes, missing panes,
+errors, and unavailable captures invalidate completion inference.
+
+**Finished is a guessed end of an observed agent turn, not task success or
+Done.** Starting the monitor on an already idle agent reports idle, not
+finished. No screen state changes notes, To resume, or durable Done.
 
 `agent explain` shows the provenance behind any classification:
 
 ```sh
 agent-monitor agent explain %3 --json
 agent-monitor agent explain --file screen.txt --agent codex
+agent-monitor agent explain %3 --watch --json       # JSON Lines, until Ctrl-C
+agent-monitor agent explain %3 --watch --samples 5  # bounded transition watch
 ```
+
+A one-shot snapshot cannot infer a completed turn; the TUI and `--watch`
+can because they observe transitions. Agent diagnostics do not open the state
+SQLite database. Local TOML overrides support `priority`,
+`bottom_non_empty_lines`, `line_starts_any`, and the legacy ordered predicates;
+`finished`/`mixed` are derived states, not snapshot-rule states. Invalid or
+oversized overrides fall back to bundled rules with a diagnostic warning.
 
 Sandbox/VM wrappers hide the real agent binary; run them as
 `AGENT_MONITOR_AGENT=codex fence -- codex` (per-command only, never

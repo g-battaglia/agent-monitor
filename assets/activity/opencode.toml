@@ -1,9 +1,41 @@
-# Bundled screen-detection manifest for Opencode (v1).
-# Minimal on purpose: unknown shapes default to Unknown rather than a
-# wrong guess. Calibrate against real output before adding rules.
-manifest_version = 1
+# Independent scoped rules informed by Herdr's documented OpenCode UI shapes.
+# https://herdr.dev/docs/agents
+manifest_version = 2
 
 [[rule]]
 id = "permission-prompt"
 state = "blocked"
-screen_any = ["Approve", "Allow", "accept?", "(y/n)", "[y/n]"]
+priority = 1000
+bottom_non_empty_lines = 12
+screen_any = ["△ Permission required"]
+
+[[rule]]
+id = "input-dialog"
+state = "waiting"
+priority = 990
+bottom_non_empty_lines = 12
+case_insensitive = true
+screen_all = ["esc dismiss"]
+screen_any = ["enter confirm", "enter submit", "enter toggle"]
+
+[[rule]]
+id = "interrupt-status"
+state = "working"
+priority = 700
+bottom_non_empty_lines = 12
+case_insensitive = true
+screen_any = ["esc to interrupt", "ctrl+c to interrupt", "press esc to interrupt", "esc again to interrupt"]
+
+[[rule]]
+id = "progress-status"
+state = "working"
+priority = 600
+bottom_non_empty_lines = 8
+screen_any = ["■■■■", "⬝⬝⬝⬝"]
+
+[[rule]]
+id = "api-error"
+state = "error"
+priority = 500
+bottom_non_empty_lines = 8
+line_starts_any = ["API Error:", "API error:", "Rate limit exceeded", "Authentication failed", "Unable to connect to API", "Request failed"]

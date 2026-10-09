@@ -13,7 +13,7 @@ use anyhow::Result;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute,
 };
@@ -40,7 +40,7 @@ enum Dialog {
         warning: String,
     },
     Panes(usize),
-    Info(String),
+    Info(String, u16),
 }
 /// The running TUI: local app state, one dialog, the worker handle,
 /// and detail-view bookkeeping (branch, tool filter, page, version).
@@ -54,7 +54,6 @@ struct Runtime {
     tools: bool,
     page: usize,
     pending_g: bool,
-    touched: bool,
 }
 impl Runtime {
     /// Queue one worker operation. Writes are never applied locally;
@@ -132,10 +131,6 @@ impl Runtime {
         self.app.select(0);
         self.branch = None;
         self.page = 0;
-        self.action(Action::Preferences {
-            project: self.app.project.clone().unwrap_or_default(),
-            view: self.app.view,
-        });
     }
     fn step(&mut self, delta: isize) {
         match self.app.panel {
@@ -158,7 +153,6 @@ impl Runtime {
         }
     }
     fn key(&mut self, key: KeyEvent, height: u16) -> bool {
-        self.touched = true;
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return true;
         }
@@ -197,11 +191,19 @@ impl Runtime {
             if self.app.panel != Panel::Detail {
                 self.app.refresh_filter();
                 if self.app.panel == Panel::Projects {
-                    self.app.project_row = usize::from(
-                        !self.app.project_search.is_empty() && !self.app.projects().is_empty(),
-                    );
+                    self.app.project_row = if self.app.project_search.is_empty() {
+                        0
+                    } else {
+                        self.app
+                            .project_tree
+                            .rows
+                            .iter()
+                            .position(|r| !r.is_group)
+                            .map(|i| i + 1)
+                            .unwrap_or(0)
+                    };
                     if key.code == KeyCode::Enter && self.app.project_row > 0 {
-                        self.app.project = self.app.projects().first().cloned();
+                        self.app.choose_project(self.app.project_row);
                         self.app.panel = Panel::Sessions;
                         self.filter_changed();
                     }
@@ -220,6 +222,19 @@ impl Runtime {
             }
             return false;
         }
+        // Presentation shortcuts are safe from every panel; search input wins.
+        if matches!(key.code, KeyCode::Char('v' | 's' | 'E' | 'C')) {
+            self.app.panel = Panel::Projects;
+            self.pending_g = false;
+            match key.code {
+                KeyCode::Char('v') => self.app.toggle_project_layout(),
+                KeyCode::Char('s') => self.app.toggle_project_order(),
+                KeyCode::Char('E') => self.app.fold_all_projects(false),
+                KeyCode::Char('C') => self.app.fold_all_projects(true),
+                _ => {}
+            }
+            return false;
+        }
         if matches!(key.code, KeyCode::Char('n' | 'd' | 'r' | 'u'))
             && self
                 .app
@@ -228,6 +243,23 @@ impl Runtime {
         {
             self.app.status = "Saved session identity required for notes and decisions; Enter focuses this terminal.".into();
             return false;
+        }
+        if self.app.panel == Panel::Projects {
+            match key.code {
+                KeyCode::Char(' ') => {
+                    self.app.toggle_project_fold();
+                    return false;
+                }
+                KeyCode::Left => {
+                    self.app.project_arrow(false);
+                    return false;
+                }
+                KeyCode::Right => {
+                    self.app.project_arrow(true);
+                    return false;
+                }
+                _ => {}
+            }
         }
         match key.code {
             KeyCode::Char('q') => return true,
@@ -301,16 +333,33 @@ impl Runtime {
             KeyCode::Char('p') => self.dialog = Some(Dialog::Projects(self.app.project_row)),
             KeyCode::Char('o') => self.dialog = Some(Dialog::Panes(0)),
             KeyCode::Char('i') => {
-                if let Some(s) = self.app.current() {
-                    self.dialog = Some(Dialog::Info(format!(
-                        "Session info\n\nAgent: {}\nName: {}\nFolder: {}\nFile: {}\nSession ID: {}\nCreated: {}\n\nEsc closes",
-                        s.metadata.provider.label(),
-                        paths::line(&s.metadata.title()),
-                        paths::line(&s.metadata.cwd),
-                        paths::line(&s.metadata.file.to_string_lossy()),
-                        paths::line(&s.metadata.native_id),
-                        paths::date(s.metadata.created)
-                    )));
+                let details = if self.app.panel == Panel::Projects {
+                    let folder = self
+                        .app
+                        .project_row
+                        .checked_sub(1)
+                        .and_then(|i| self.app.projects().get(i));
+                    let group = self
+                        .app
+                        .project_row
+                        .checked_sub(1)
+                        .and_then(|i| self.app.project_tree.rows.get(i))
+                        .is_some_and(|r| r.is_group);
+                    Some(if group {
+                        crate::details::Details::folder_group(&self.app.catalog, folder.unwrap())
+                    } else {
+                        crate::details::Details::project(
+                            &self.app.catalog,
+                            folder.map(String::as_str),
+                        )
+                    })
+                } else {
+                    self.app
+                        .current()
+                        .map(|s| crate::details::Details::session(&self.app.catalog, s))
+                };
+                if let Some(details) = details {
+                    self.dialog = Some(Dialog::Info(details.text(), 0));
                 }
             }
             KeyCode::Char('?') => {
@@ -365,9 +414,10 @@ impl Runtime {
             KeyCode::Char('R') => self.action(Action::Refresh),
             KeyCode::Enter => {
                 if self.app.panel == Panel::Projects {
-                    self.app.choose_project(self.app.project_row);
-                    self.app.panel = Panel::Sessions;
-                    self.filter_changed();
+                    if self.app.choose_project(self.app.project_row) {
+                        self.app.panel = Panel::Sessions;
+                        self.filter_changed();
+                    }
                 } else if let Some(s) = self.app.current() {
                     match s.bindings.len() {
                         0 if !s.probable.is_empty() => {
@@ -408,25 +458,72 @@ impl Runtime {
         };
         let accepted = key.code == KeyCode::Enter;
         let keep = match &mut dialog {
-            Dialog::Info(_) => !accepted,
+            Dialog::Info(_, scroll) => {
+                let step = match key.code {
+                    KeyCode::PageDown => 8,
+                    KeyCode::PageUp => -8,
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => 8,
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => -8,
+                    _ => delta,
+                };
+                *scroll = (*scroll as isize + step)
+                    .clamp(0, self.app.modal_max_scroll.get() as isize)
+                    as u16;
+                !accepted
+            }
             Dialog::Help(menu) => {
                 if matches!(key.code, KeyCode::Char('?') | KeyCode::Char('q')) {
                     false
+                } else if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    match key.code {
+                        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+                            menu.step(6)
+                        }
+                        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                            menu.step(-6)
+                        }
+                        _ => {}
+                    }
+                    true
+                } else if matches!(
+                    key.code,
+                    KeyCode::Tab
+                        | KeyCode::BackTab
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::PageUp
+                        | KeyCode::PageDown
+                        | KeyCode::Home
+                        | KeyCode::End
+                ) {
+                    match key.code {
+                        KeyCode::Tab | KeyCode::Right => menu.step_group(1),
+                        KeyCode::BackTab | KeyCode::Left => menu.step_group(-1),
+                        KeyCode::PageDown => menu.step(6),
+                        KeyCode::PageUp => menu.step(-6),
+                        KeyCode::Home => menu.step(-1_000_000),
+                        KeyCode::End => menu.step(1_000_000),
+                        _ => {}
+                    }
+                    true
                 } else {
-                    menu.selected = (menu.selected as isize + delta)
-                        .clamp(0, menu.actions.len().saturating_sub(1) as isize)
-                        as usize;
-                    let command = if accepted {
-                        menu.actions.get(menu.selected)
+                    menu.step(delta);
+                    let index = if accepted {
+                        Some(menu.selected)
                     } else {
-                        menu.actions.iter().find(|a| {
+                        menu.actions.iter().position(|a| {
                             a.key == key.code
                                 && !matches!(key.code, KeyCode::Char('j') | KeyCode::Char('k'))
                         })
                     };
-                    if let Some(command) = command {
+                    if let Some(index) = index {
+                        menu.selected = index;
+                        let command = &menu.actions[index];
                         if !command.enabled {
-                            self.app.status = "Action unavailable in this context".into();
+                            menu.notice = Some(command.disabled_reason.into());
                             true
                         } else if self.app.panel != Panel::Projects
                             && menu.target != self.app.selected
@@ -478,8 +575,9 @@ impl Runtime {
                 *row =
                     (*row as isize + delta).clamp(0, self.app.projects().len() as isize) as usize;
                 if accepted {
-                    self.app.choose_project(*row);
-                    self.filter_changed();
+                    if self.app.choose_project(*row) {
+                        self.filter_changed();
+                    }
                     false
                 } else {
                     true
@@ -560,6 +658,50 @@ impl Runtime {
             self.dialog = Some(dialog);
         }
     }
+    fn menu_mouse(&mut self, mouse: MouseEvent, area: ratatui::layout::Rect) {
+        if !mouse.modifiers.is_empty() {
+            return;
+        }
+        let mut activate = false;
+        let mut dismiss = false;
+        if let Some(Dialog::Help(menu)) = &mut self.dialog {
+            let count = menu.display_height();
+            let body = render::menu_list_area(area, count);
+            let groups = render::menu_groups_area(area, count);
+            let point = ratatui::layout::Position::new(mouse.column, mouse.row);
+            match mouse.kind {
+                MouseEventKind::ScrollDown if groups.contains(point) => menu.step_group(1),
+                MouseEventKind::ScrollUp if groups.contains(point) => menu.step_group(-1),
+                MouseEventKind::ScrollDown => menu.step(1),
+                MouseEventKind::ScrollUp => menu.step(-1),
+                MouseEventKind::Down(event::MouseButton::Left) if groups.contains(point) => menu
+                    .choose_group(
+                        self.app.menu_group_offset.get() + (mouse.row - groups.y) as usize,
+                    ),
+                MouseEventKind::Down(event::MouseButton::Left) if body.contains(point) => {
+                    let index = self.app.menu_offset.get() + (mouse.row - body.y) as usize;
+                    if let Some(Some(selected)) = menu.rows().get(index) {
+                        menu.selected = *selected;
+                        activate = true;
+                    }
+                }
+                MouseEventKind::Down(event::MouseButton::Left)
+                    if !render::menu_area(area, count).contains(point) =>
+                {
+                    dismiss = true
+                }
+                _ => {}
+            }
+        }
+        if dismiss {
+            self.dialog = None;
+        } else if activate {
+            self.key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                area.height,
+            );
+        }
+    }
     fn paste(&mut self, text: String) {
         if let Some(Dialog::Note { text: note, .. }) = &mut self.dialog {
             let clipped = text
@@ -577,7 +719,17 @@ impl Runtime {
             if self.app.panel != Panel::Detail {
                 self.app.refresh_filter();
                 if self.app.panel == Panel::Projects {
-                    self.app.project_row = usize::from(!self.app.projects().is_empty());
+                    self.app.project_row = if self.app.project_search.is_empty() {
+                        0
+                    } else {
+                        self.app
+                            .project_tree
+                            .rows
+                            .iter()
+                            .position(|r| !r.is_group)
+                            .map(|i| i + 1)
+                            .unwrap_or(0)
+                    };
                 } else {
                     self.app.select(0);
                 }
@@ -591,7 +743,7 @@ impl Runtime {
     fn modal(&mut self) {
         let text = self.dialog.as_ref().map(|dialog| match dialog {
             Dialog::Help(_) => String::new(),
-            Dialog::Info(text) => text.clone(),
+            Dialog::Info(text, _) => text.clone(),
             Dialog::Note { text, .. } => {
                 format!("Next step\n\n{text}▏\n\nEnter saves · Esc cancels")
             }
@@ -603,7 +755,7 @@ impl Runtime {
             Dialog::Projects(row) => picker(
                 "Projects",
                 std::iter::once("All projects".into())
-                    .chain(self.app.projects().iter().map(|c| paths::line(c)))
+                    .chain(self.app.project_tree.rows.iter().map(|r| if r.is_group {format!("{} (folder; Enter toggles)",paths::line(&r.cwd))} else {paths::line(&r.cwd)}))
                     .collect(),
                 *row,
             ),
@@ -646,6 +798,11 @@ impl Runtime {
                 ),
             ),
         });
+        self.app.modal_details = matches!(self.dialog, Some(Dialog::Info(..)));
+        self.app.modal_scroll = match &self.dialog {
+            Some(Dialog::Info(_, scroll)) => *scroll,
+            _ => 0,
+        };
         self.app.command_menu = match &self.dialog {
             Some(Dialog::Help(menu)) => Some(menu.clone()),
             _ => None,
@@ -684,12 +841,14 @@ pub fn run(root: std::path::PathBuf, project: Option<String>) -> Result<()> {
         tools: false,
         page: 0,
         pending_g: false,
-        touched: false,
     };
-    runtime.app.project = project;
+    runtime.app.project = project.map(|p| {
+        paths::canonical(std::path::Path::new(&p))
+            .to_string_lossy()
+            .into_owned()
+    });
     runtime.app.catalog.scanning = true;
     let mut terminal = ratatui::init();
-    let mut first_catalog = true;
     let mut dirty = true;
     let result = (|| -> Result<()> {
         execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
@@ -697,14 +856,6 @@ pub fn run(root: std::path::PathBuf, project: Option<String>) -> Result<()> {
             while let Ok(reply) = runtime.worker.replies.try_recv() {
                 dirty = true;
                 match reply {
-                    Reply::Preferences { project, view } => {
-                        if !runtime.touched {
-                            if runtime.app.project.is_none() {
-                                runtime.app.project = project;
-                            }
-                            runtime.app.view = view;
-                        }
-                    }
                     Reply::Catalog(catalog) => {
                         if let Some(project) = runtime.app.project.clone() {
                             let paths = catalog
@@ -724,15 +875,6 @@ pub fn run(root: std::path::PathBuf, project: Option<String>) -> Result<()> {
                             if matches.len() == 1 {
                                 runtime.app.project = Some(matches[0].clone());
                             }
-                        }
-                        if first_catalog && !catalog.sessions.is_empty() {
-                            if runtime.app.project.is_none() && !runtime.touched {
-                                let cwd = std::env::current_dir()?.to_string_lossy().into_owned();
-                                if catalog.sessions.iter().any(|s| s.metadata.cwd == cwd) {
-                                    runtime.app.project = Some(cwd);
-                                }
-                            }
-                            first_catalog = false;
                         }
                         runtime.app.apply(catalog);
                     }
@@ -774,7 +916,7 @@ pub fn run(root: std::path::PathBuf, project: Option<String>) -> Result<()> {
                         });
                     }
                     Reply::Launch(spec) => {
-                        // Terminal ownership passes to Pi only after explicit
+                        // Terminal ownership passes to an agent only after explicit
                         // confirmation plus worker revalidation, outside input.
                         execute!(
                             std::io::stdout(),
@@ -813,35 +955,16 @@ pub fn run(root: std::path::PathBuf, project: Option<String>) -> Result<()> {
                         }
                     }
                     Event::Mouse(mouse) if matches!(runtime.dialog, Some(Dialog::Help(_))) => {
-                        if let Some(Dialog::Help(menu)) = &mut runtime.dialog {
-                            let rows = menu.rows();
-                            let rect =
-                                render::menu_list_area(terminal.get_frame().area(), rows.len());
-                            match mouse.kind {
-                                MouseEventKind::ScrollDown => {
-                                    menu.selected = (menu.selected + 1).min(menu.actions.len() - 1)
-                                }
-                                MouseEventKind::ScrollUp => {
-                                    menu.selected = menu.selected.saturating_sub(1)
-                                }
-                                MouseEventKind::Down(event::MouseButton::Left)
-                                    if rect.contains(ratatui::layout::Position::new(
-                                        mouse.column,
-                                        mouse.row,
-                                    )) =>
-                                {
-                                    let index = runtime.app.menu_offset.get()
-                                        + (mouse.row - rect.y) as usize;
-                                    if let Some(Some(selected)) = rows.get(index) {
-                                        menu.selected = *selected;
-                                        runtime.key(
-                                            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                                            24,
-                                        );
-                                    }
-                                }
-                                _ => {}
-                            }
+                        runtime.menu_mouse(mouse, terminal.get_frame().area());
+                    }
+                    Event::Mouse(mouse) if matches!(runtime.dialog, Some(Dialog::Info(..))) => {
+                        let key = match mouse.kind {
+                            MouseEventKind::ScrollDown => Some(KeyCode::Down),
+                            MouseEventKind::ScrollUp => Some(KeyCode::Up),
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            runtime.key(KeyEvent::new(key, KeyModifiers::NONE), 24);
                         }
                     }
                     Event::Mouse(mouse) if runtime.dialog.is_none() => {
@@ -877,10 +1000,30 @@ pub fn run(root: std::path::PathBuf, project: Option<String>) -> Result<()> {
                                             runtime.app.project_row =
                                                 (runtime.app.project_offset.get() + row)
                                                     .min(runtime.app.projects().len());
-                                            runtime.key(
-                                                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                                                rect.height,
-                                            );
+                                            let disclosure = runtime
+                                                .app
+                                                .project_row
+                                                .checked_sub(1)
+                                                .and_then(|i| runtime.app.project_tree.rows.get(i))
+                                                .is_some_and(|r| {
+                                                    let marker = usize::from(rect.x)
+                                                        + 3
+                                                        + r.depth.saturating_mul(3);
+                                                    r.has_children
+                                                        && (marker..marker.saturating_add(2))
+                                                            .contains(&usize::from(mouse.column))
+                                                });
+                                            if disclosure {
+                                                runtime.app.toggle_project_fold();
+                                            } else {
+                                                runtime.key(
+                                                    KeyEvent::new(
+                                                        KeyCode::Enter,
+                                                        KeyModifiers::NONE,
+                                                    ),
+                                                    rect.height,
+                                                );
+                                            }
                                         }
                                         if i == 1 {
                                             let offset = runtime.app.session_offset.get();
@@ -916,7 +1059,10 @@ mod tests {
     fn fixture() -> Runtime {
         Runtime {
             worker: Worker::idle(),
-            app: App::default(),
+            app: App {
+                view: View::All,
+                ..App::default()
+            },
             dialog: None,
             detail_generation: 0,
             detail_version: None,
@@ -924,7 +1070,6 @@ mod tests {
             tools: false,
             page: 0,
             pending_g: false,
-            touched: false,
         }
     }
     fn session(id: &str) -> Session {
@@ -965,7 +1110,8 @@ mod tests {
             .iter()
             .position(|a| a.key == KeyCode::Char('d'))
             .unwrap();
-        for _ in 0..row {
+        let start = runtime.app.command_menu.as_ref().unwrap().selected;
+        for _ in start..row {
             runtime.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 24);
         }
         runtime.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 24);
@@ -982,6 +1128,95 @@ mod tests {
         runtime.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 24);
         runtime.modal();
         assert!(runtime.app.command_menu.is_none());
+    }
+    #[test]
+    fn categorized_menu_keeps_direct_keys_and_modified_keys_cannot_change_decisions() {
+        let mut runtime = fixture();
+        let (actions, requests) = std::sync::mpsc::sync_channel(16);
+        runtime.worker.actions = actions;
+        runtime.app.apply(Catalog {
+            sessions: vec![open_terminal("pane-demo", "/repo/demo")],
+            ..Default::default()
+        });
+        runtime.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), 24);
+        runtime.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 24);
+        let Some(Dialog::Help(menu)) = &runtime.dialog else {
+            panic!("menu closed")
+        };
+        assert_eq!(menu.groups()[menu.group_index()], "Folders");
+        runtime.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE), 24);
+        let Some(Dialog::Help(menu)) = &runtime.dialog else {
+            panic!("disabled action closed menu")
+        };
+        assert!(
+            menu.notice
+                .as_deref()
+                .unwrap()
+                .contains("Saved session required")
+        );
+        assert_eq!(menu.groups()[menu.group_index()], "Session");
+        runtime.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL), 24);
+        runtime.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT), 24);
+        assert!(requests.try_recv().is_err());
+        assert!(matches!(runtime.dialog, Some(Dialog::Help(_))));
+        assert_eq!(runtime.app.panel, Panel::Sessions);
+        runtime.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 24);
+        assert!(runtime.dialog.is_none());
+    }
+    #[test]
+    fn menu_mouse_categories_actions_and_outside_click_use_the_drawn_rectangles() {
+        let mut runtime = fixture();
+        let (actions, requests) = std::sync::mpsc::sync_channel(16);
+        runtime.worker.actions = actions;
+        runtime.app.apply(Catalog {
+            sessions: vec![session("one")],
+            ..Default::default()
+        });
+        runtime.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), 24);
+        runtime.modal();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render::draw(f, &runtime.app)).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let menu = runtime.app.command_menu.as_ref().unwrap();
+        let count = menu.display_height();
+        let category = menu.groups().iter().position(|g| *g == "Catalog").unwrap();
+        let groups = render::menu_groups_area(area, count);
+        runtime.menu_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(event::MouseButton::Left),
+                column: groups.x + 1,
+                row: groups.y + category as u16,
+                modifiers: KeyModifiers::NONE,
+            },
+            area,
+        );
+        runtime.modal();
+        terminal.draw(|f| render::draw(f, &runtime.app)).unwrap();
+        let body = render::menu_list_area(area, count);
+        runtime.menu_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(event::MouseButton::Left),
+                column: body.x + 1,
+                row: body.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            area,
+        );
+        assert!(matches!(requests.try_recv().unwrap(), Action::Refresh));
+        assert!(runtime.dialog.is_none());
+        runtime.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), 24);
+        runtime.menu_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(event::MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            area,
+        );
+        assert!(runtime.dialog.is_none());
+        assert!(requests.try_recv().is_err());
     }
     #[test]
     fn note_target_does_not_follow_selection_and_paste_is_not_a_command() {
@@ -1045,8 +1280,8 @@ mod tests {
         runtime.app.panel = Panel::Projects;
         runtime.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL), 24);
         runtime.paste("acme".into());
-        assert_eq!(runtime.app.projects(), &["/repo/acme-website"]);
-        assert_eq!(runtime.app.project_row, 1);
+        assert_eq!(runtime.app.projects(), &["/repo", "/repo/acme-website"]);
+        assert_eq!(runtime.app.project_row, 2);
         runtime.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 24);
         assert_eq!(runtime.app.project.as_deref(), Some("/repo/acme-website"));
         assert_eq!(runtime.app.panel, Panel::Sessions);
@@ -1057,7 +1292,7 @@ mod tests {
         assert_eq!(runtime.app.project_search, "acme");
     }
     #[test]
-    fn choosing_all_projects_clears_open_view_and_hidden_search() {
+    fn choosing_all_projects_keeps_the_view_and_clears_search() {
         let mut runtime = fixture();
         let mut saved = session("historical");
         saved.state = ResumeState::History;
@@ -1074,15 +1309,15 @@ mod tests {
         runtime.app.panel = Panel::Projects;
         runtime.app.project_row = 0;
         runtime.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 24);
-        assert_eq!(runtime.app.view, View::All);
+        assert_eq!(runtime.app.view, View::Open);
         assert!(runtime.app.project.is_none());
         assert!(runtime.app.search.is_empty());
-        assert_eq!(runtime.app.rows().len(), 1);
+        assert!(runtime.app.rows().is_empty());
         // The p picker uses the same reset behavior.
         runtime.app.view = View::Done;
         runtime.dialog = Some(Dialog::Projects(0));
         runtime.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 24);
-        assert_eq!(runtime.app.view, View::All);
+        assert_eq!(runtime.app.view, View::Done);
     }
     #[test]
     fn live_rows_can_focus_but_cannot_queue_persistent_decisions() {
@@ -1108,7 +1343,10 @@ mod tests {
     }
     #[test]
     fn polling_keeps_selection_and_viewport() {
-        let mut app = App::default();
+        let mut app = App {
+            view: View::All,
+            ..App::default()
+        };
         app.apply(Catalog {
             sessions: vec![session("one"), session("two")],
             ..Default::default()
@@ -1121,6 +1359,301 @@ mod tests {
         });
         assert_eq!(app.current().unwrap().id, "two");
         assert_eq!(app.scroll, 7);
+    }
+    #[test]
+    fn project_presentation_never_changes_scope_sessions_or_queues_actions() {
+        let mut runtime = fixture();
+        let (actions, requests) = std::sync::mpsc::sync_channel(16);
+        runtime.worker.actions = actions;
+        let mut parent = session("parent");
+        parent.metadata.cwd = "/repo/app".into();
+        let mut child = session("child");
+        child.metadata.cwd = "/repo/app/api".into();
+        child.note = "Keep this next step".into();
+        let mut other = session("other");
+        other.metadata.cwd = "/repo/zebra".into();
+        other.metadata.updated = 100;
+        runtime.app.apply(Catalog {
+            sessions: vec![parent, child, other],
+            ..Default::default()
+        });
+        runtime.app.project = Some("/repo/app/api".into());
+        runtime.app.refresh_filter();
+        runtime.app.select(0);
+        runtime.app.scroll = 7;
+        runtime.app.panel = Panel::Projects;
+        runtime.app.project_row = runtime.app.visible_project_row("/repo/app/api").unwrap();
+        runtime.key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths, vec!["/repo"]);
+        assert_eq!(runtime.app.project_row, 1);
+        runtime.app.apply(runtime.app.catalog.clone());
+        assert_eq!(runtime.app.project_row, 1);
+        runtime.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths.len(), 3);
+        runtime.app.project_row = runtime.app.visible_project_row("/repo/app/api").unwrap();
+        runtime.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths[0], "/repo/zebra");
+        assert_eq!(
+            runtime.app.project_paths[runtime.app.project_row - 1],
+            "/repo/app/api"
+        );
+        runtime.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), 24);
+        assert_eq!(
+            runtime.app.project_paths[runtime.app.project_row - 1],
+            "/repo"
+        );
+        runtime.key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE), 24);
+        assert_eq!(
+            runtime
+                .app
+                .project_tree
+                .rows
+                .iter()
+                .filter(|r| !r.is_group)
+                .count(),
+            3
+        );
+        assert_eq!(runtime.app.project.as_deref(), Some("/repo/app/api"));
+        assert_eq!(runtime.app.view, View::All);
+        assert_eq!(runtime.app.current().unwrap().id, "child");
+        assert_eq!(runtime.app.current().unwrap().note, "Keep this next step");
+        assert_eq!(runtime.app.current().unwrap().state, ResumeState::Resume);
+        assert_eq!(runtime.app.scroll, 7);
+        assert!(requests.try_recv().is_err());
+    }
+    #[test]
+    fn project_arrows_fold_navigate_and_search_does_not_consume_controls() {
+        let mut runtime = fixture();
+        let mut parent = session("parent");
+        parent.metadata.cwd = "/repo/app".into();
+        let mut child = session("child");
+        child.metadata.cwd = "/repo/app/api".into();
+        runtime.app.apply(Catalog {
+            sessions: vec![parent, child],
+            ..Default::default()
+        });
+        runtime.app.panel = Panel::Projects;
+        runtime.app.project_row = 1;
+        runtime.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths.len(), 1);
+        runtime.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths.len(), 2);
+        runtime.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_row, 2);
+        runtime.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_row, 1);
+        runtime.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths.len(), 1);
+        runtime.app.project_row = 0;
+        runtime.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths.len(), 2);
+        runtime.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), 24);
+        for c in ['v', 's', 'C', 'E', ' '] {
+            runtime.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), 24);
+        }
+        assert_eq!(runtime.app.project_search, "vsCE ");
+        assert_eq!(
+            runtime.app.project_options.layout,
+            super::super::projects::ProjectLayout::Tree
+        );
+        assert_eq!(
+            runtime.app.project_options.order,
+            super::super::projects::ProjectOrder::Alphabetical
+        );
+        runtime.app.editing_search = false;
+        runtime.app.project_search.clear();
+        runtime.app.refresh_filter();
+        runtime.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), 24);
+        runtime.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), 24);
+        assert!(runtime.dialog.is_none());
+        assert_eq!(
+            runtime.app.project_options.layout,
+            super::super::projects::ProjectLayout::Flat
+        );
+    }
+    fn open_terminal(id: &str, cwd: &str) -> Session {
+        let mut s = session(id);
+        s.metadata.cwd = cwd.into();
+        s.available = false;
+        s.probable.push(crate::tmux::PaneIdentity {
+            socket: "/fake".into(),
+            server: "1".into(),
+            pane: "%1".into(),
+            pane_pid: 1,
+            pane_start: "start".into(),
+            client_pid: 2,
+            client_start: "start".into(),
+            target: "fixture:1.0".into(),
+            session: "fixture".into(),
+            window: "1".into(),
+            cwd: cwd.into(),
+            command: "pi".into(),
+            title: "fixture".into(),
+            provider: Some(Provider::Pi),
+            activity: None,
+            activity_evidence: None,
+        });
+        s
+    }
+    #[test]
+    fn open_sibling_projects_have_foldable_groups_and_global_controls_work_from_flat() {
+        let mut runtime = fixture();
+        runtime.app.view = View::Open;
+        let (actions, requests) = std::sync::mpsc::sync_channel(16);
+        runtime.worker.actions = actions;
+        let mut saved = session("saved");
+        saved.metadata.cwd = "/workspace/zebra".into();
+        saved.metadata.updated = 100;
+        runtime.app.apply(Catalog {
+            sessions: vec![
+                open_terminal("pane-alpha", "/workspace/alpha"),
+                open_terminal("pane-zebra", "/workspace/zebra"),
+                saved,
+            ],
+            ..Default::default()
+        });
+        assert!(runtime.app.project_tree.rows[0].is_group);
+        assert_eq!(runtime.app.project_tree.rows[0].cwd, "/workspace");
+        assert_eq!(
+            (
+                runtime.app.project_tree.rows[0].shown,
+                runtime.app.project_tree.rows[0].total
+            ),
+            (2, 3)
+        );
+        let before = runtime.app.selected.clone();
+        runtime.app.scroll = 7;
+        runtime.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_tree.rows.len(), 2);
+        runtime.app.panel = Panel::Sessions;
+        runtime.key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.panel, Panel::Projects);
+        assert_eq!(runtime.app.project_tree.rows.len(), 1);
+        assert!(
+            runtime
+                .app
+                .project_tree
+                .label(0)
+                .contains("▸ Workspace/ (2 hidden)")
+        );
+        runtime.app.project_row = 1;
+        runtime.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_tree.rows.len(), 3);
+        assert!(runtime.app.project.is_none());
+        assert_eq!(runtime.app.panel, Panel::Projects);
+        runtime.key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), 24);
+        runtime.modal();
+        assert!(
+            runtime
+                .app
+                .modal
+                .as_deref()
+                .unwrap()
+                .contains("Folder group (includes nested projects)")
+        );
+        assert!(
+            runtime
+                .app
+                .modal
+                .as_deref()
+                .unwrap()
+                .contains("Saved sessions: 1    Live terminals: 2")
+        );
+        runtime.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 24);
+        runtime.app.panel = Panel::Detail;
+        runtime.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), 24);
+        runtime.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_paths[0], "/workspace/zebra");
+        assert!(runtime.app.status.contains("known for 1/2"));
+        runtime.key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE), 24);
+        assert_eq!(runtime.app.project_tree.rows.len(), 3);
+        assert_eq!(runtime.app.view, View::Open);
+        assert!(runtime.app.project.is_none());
+        assert_eq!(runtime.app.selected, before);
+        assert_eq!(runtime.app.scroll, 7);
+        assert!(requests.try_recv().is_err());
+    }
+    #[test]
+    fn presentation_commands_explain_empty_views_instead_of_silently_ignoring_input() {
+        let mut runtime = fixture();
+        runtime.app.apply(Catalog {
+            sessions: vec![session("unknown-folder")],
+            ..Default::default()
+        });
+        runtime.app.panel = Panel::Sessions;
+        runtime.key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE), 24);
+        assert!(runtime.app.status.contains("No nested folders"));
+        runtime.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 24);
+        assert!(runtime.app.status.contains("known for 0/1"));
+        runtime.app.project_row = 1;
+        runtime.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), 24);
+        assert!(runtime.app.status.contains("No child folders"));
+    }
+    #[test]
+    fn startup_is_all_projects_open_and_catalog_updates_do_not_choose_a_folder() {
+        let mut app = App::default();
+        assert_eq!(app.view, View::Open);
+        assert!(app.project.is_none());
+        app.apply(Catalog {
+            sessions: vec![session("saved")],
+            ..Default::default()
+        });
+        assert!(app.project.is_none());
+        assert_eq!(app.project_row, 0);
+        assert_eq!(app.view, View::Open);
+    }
+    #[test]
+    fn details_use_the_highlighted_project_and_support_scrolling() {
+        let mut runtime = fixture();
+        let mut row = session("work");
+        row.metadata.cwd = "/repo/T/Python".into();
+        row.metadata.file = "/history/session.jsonl".into();
+        row.metadata.provider = Provider::Claude;
+        runtime.app.apply(Catalog {
+            sessions: vec![row],
+            ..Default::default()
+        });
+        runtime.app.panel = Panel::Projects;
+        runtime.app.project_row = runtime.app.visible_project_row("/repo/T/Python").unwrap();
+        runtime.key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), 24);
+        runtime.modal();
+        assert!(
+            runtime
+                .app
+                .modal
+                .as_deref()
+                .unwrap()
+                .contains("Folder: /repo/T/Python")
+        );
+        assert!(runtime.app.modal_details);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|f| render::draw(f, &runtime.app)).unwrap();
+        assert!(runtime.app.modal_max_scroll.get() > 0);
+        runtime.app.modal_max_scroll.set(30);
+        runtime.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), 24);
+        runtime.modal();
+        assert_eq!(runtime.app.modal_scroll, 8);
+        runtime.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 24);
+        runtime.app.panel = Panel::Sessions;
+        runtime.key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), 24);
+        runtime.modal();
+        assert!(
+            runtime
+                .app
+                .modal
+                .as_deref()
+                .unwrap()
+                .contains("Source: /history/session.jsonl")
+        );
+        assert!(
+            runtime
+                .app
+                .modal
+                .as_deref()
+                .unwrap()
+                .contains("Agent: [claude]")
+        );
     }
     #[test]
     fn quit_is_local_while_worker_is_blocked() {

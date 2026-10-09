@@ -38,10 +38,6 @@ pub enum Action {
         id: String,
         allow_uncertain: bool,
     },
-    Preferences {
-        project: String,
-        view: View,
-    },
     Refresh,
 }
 pub enum Reply {
@@ -56,10 +52,6 @@ pub enum Reply {
         spec: ResumeSpec,
     },
     Launch(ResumeSpec),
-    Preferences {
-        project: Option<String>,
-        view: View,
-    },
 }
 /// Handles into the worker thread: ordered action queue, latest detail
 /// query slot, and the reply channel the event loop drains each frame.
@@ -111,17 +103,7 @@ fn run(
             return;
         }
     };
-    let project = service
-        .store
-        .preference("project")
-        .ok()
-        .flatten()
-        .filter(|p| !p.is_empty());
-    // Start with every saved session and live pane, not a stale Open filter.
-    let view = View::All;
-    if replies.send(Reply::Preferences { project, view }).is_err() {
-        return;
-    }
+    // Startup scope/view belong to the UI defaults, not saved preferences.
     let mut catalog = Catalog {
         sessions: service.store.list().unwrap_or_default(),
         scanning: true,
@@ -190,18 +172,6 @@ fn run(
                         Ok(spec) => Reply::Launch(spec),
                         Err(e) => Reply::Ack(Err(error(e))),
                     },
-                    Action::Preferences { project, view } => Reply::Ack(
-                        service
-                            .store
-                            .set_preference("project", &project)
-                            .and_then(|()| {
-                                service
-                                    .store
-                                    .set_preference("explorer_view", &serde_json::to_string(&view)?)
-                            })
-                            .map(|()| String::new())
-                            .map_err(error),
-                    ),
                     Action::Refresh => {
                         last_presence = Instant::now() - Duration::from_secs(3);
                         last_index = Instant::now() - Duration::from_secs(6);
@@ -236,6 +206,15 @@ fn run(
                         session
                             .bindings
                             .retain(|b| (0..8000).contains(&(crate::paths::now() - b.bridge.seen)));
+                        for binding in &mut session.bindings {
+                            if let Some(pane) = &mut binding.pane {
+                                pane.activity = Some(crate::activity::AgentActivity::Unknown);
+                                pane.activity_evidence = Some(crate::activity::MatchEvidence {
+                                    fallback_reason: "presence-refresh-unavailable".into(),
+                                    ..Default::default()
+                                });
+                            }
+                        }
                     }
                 }
             }

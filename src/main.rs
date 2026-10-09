@@ -2,7 +2,7 @@
 //!
 //! With no subcommand (or `pick`) this opens the interactive TUI, which
 //! requires a real terminal. Every other subcommand runs headlessly and
-//! prints text or JSON. Starting Pi always needs an explicit confirmation
+//! prints text or JSON. Starting an agent always needs explicit confirmation
 //! (`--resume` in scripts); verified/probable openings block duplicates.
 use agent_monitor::{
     model::{ResumeState, View, project_name},
@@ -18,7 +18,10 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(version, about = "Your Pi sessions, ready to resume")]
+#[command(
+    version,
+    about = "Independent tmux monitor for Claude Code, Codex, OpenCode, and Pi"
+)]
 struct Cli {
     #[arg(long, global = true, env = "AGENT_MONITOR_HOME")]
     data_dir: Option<PathBuf>,
@@ -55,7 +58,16 @@ enum Cmd {
         #[arg(long)]
         tools: bool,
     },
-    /// Jump to the open Pi; starting one needs explicit confirmation.
+    /// Inspect project folders, agent counts, storage, and session metadata.
+    Details {
+        #[arg(conflicts_with = "project")]
+        id: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Jump to an open agent; starting one needs explicit confirmation.
     Open {
         id: String,
         #[arg(long)]
@@ -99,8 +111,14 @@ enum Agent {
     Explain {
         /// Pane target: `%id`, `socket:pane`, or agent name (unique match).
         target: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "watch")]
         file: Option<PathBuf>,
+        /// Observe transitions every two seconds until Ctrl-C.
+        #[arg(long)]
+        watch: bool,
+        /// Bound the watcher (JSON mode emits one object per line).
+        #[arg(long,requires="watch",value_parser=clap::value_parser!(u16).range(1..=1000))]
+        samples: Option<u16>,
         #[arg(long)]
         agent: Option<String>,
         #[arg(long)]
@@ -139,6 +157,17 @@ fn run(cli: Cli) -> Result<()> {
     let command = match cli.command {
         None => return ui::run(paths::root(cli.data_dir)?, None),
         Some(Cmd::Pick { project }) => return ui::run(paths::root(cli.data_dir)?, project),
+        Some(Cmd::Agent {
+            command:
+                Agent::Explain {
+                    target,
+                    file,
+                    agent,
+                    json,
+                    watch,
+                    samples,
+                },
+        }) => return explain(target, file, agent, json, watch, samples),
         Some(command) => command,
     };
     let service = Service::open(cli.data_dir)?;
@@ -245,11 +274,14 @@ fn run(cli: Cli) -> Result<()> {
             }
             for s in &rows {
                 println!(
-                    "[{}] {}  {}  {}\n  {}",
+                    "[{}] {}  {}  {}{}\n  {}",
                     s.metadata.provider.label(),
                     paths::line(&s.metadata.title()),
                     s.state.label(),
                     s.presence(),
+                    s.live_activity()
+                        .map(|a| format!("  [{}]", a.label()))
+                        .unwrap_or_default(),
                     s.id
                 );
             }
@@ -309,14 +341,23 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Agent { command } => match command {
-            Agent::Explain {
-                target,
-                file,
-                agent,
-                json,
-            } => explain(target, file, agent, json),
-        },
+        Cmd::Details { id, project, json } => {
+            service.sync()?;
+            let catalog = service.catalog()?;
+            let details = if let Some(id) = id {
+                agent_monitor::details::Details::session(&catalog, service.resolve(&catalog, &id)?)
+            } else {
+                let project = resolve_project(&catalog, project)?;
+                agent_monitor::details::Details::project(&catalog, project.as_deref())
+            };
+            if json {
+                print_json(&details)
+            } else {
+                println!("{}", details.text());
+                Ok(())
+            }
+        }
+        Cmd::Agent { .. } => unreachable!("agent diagnostics do not open the state database"),
         Cmd::Done { id } => service.store.change(&id, Some(ResumeState::Done), None),
         Cmd::Reopen { id } => service.store.change(&id, Some(ResumeState::Resume), None),
         Cmd::Note { id, text } => service.store.change(&id, None, Some(&text)),
@@ -384,6 +425,8 @@ fn explain(
     file: Option<PathBuf>,
     agent: Option<String>,
     json: bool,
+    watch: bool,
+    samples: Option<u16>,
 ) -> Result<()> {
     use agent_monitor::{activity, model::Provider};
     if let Some(path) = file {
@@ -391,7 +434,12 @@ fn explain(
             .as_deref()
             .and_then(Provider::parse)
             .context("pass --agent with pi, claude, codex, or opencode")?;
-        let raw = std::fs::read_to_string(&path)?;
+        use std::io::Read;
+        let mut raw = String::new();
+        std::fs::File::open(&path)?
+            .take(64 * 1024 + 1)
+            .read_to_string(&mut raw)?;
+        ensure!(raw.len() <= 64 * 1024, "screen snapshot exceeds 64 KiB");
         let tail = paths::clean(&raw);
         let (state, evidence) = activity::classify(agent, "", &tail);
         let body = serde_json::json!({
@@ -402,6 +450,8 @@ fn explain(
             "manifest_version": evidence.manifest_version,
             "fallback": evidence.fallback_reason,
             "title_signal": evidence.title_signal,
+            "evidence": evidence,
+            "inferred": true,
         });
         if json {
             return print_json(&body);
@@ -413,53 +463,105 @@ fn explain(
     if agent.is_some() && wanted.is_none() {
         anyhow::bail!("unknown agent: use pi, claude, codex, or opencode");
     }
-    let panes = agent_monitor::tmux::discover(&agent_monitor::tmux::TmuxConfig::default())?;
-    let mut candidates: Vec<_> = panes
-        .into_iter()
-        .filter(|p| p.provider.is_some())
-        .filter(|p| wanted.is_none_or(|w| p.provider == Some(w)))
-        .collect();
-    if let Some(target) = target.as_deref() {
-        let trimmed: Vec<_> = candidates
+    let mut tracker = activity::ActivityTracker::default();
+    let origin = std::time::Instant::now();
+    let mut identity = None;
+    let mut sample: u64 = 0;
+    loop {
+        let panes = agent_monitor::tmux::discover(&agent_monitor::tmux::TmuxConfig::default())?;
+        let mut candidates: Vec<_> = panes
             .into_iter()
-            .filter(|p| {
-                p.pane == target
-                    || format!("{}:{}", p.socket, p.pane) == target
-                    || p.provider.is_some_and(|pr| pr.label() == target)
-            })
+            .filter(|p| p.provider.is_some())
+            .filter(|p| wanted.is_none_or(|w| p.provider == Some(w)))
             .collect();
-        candidates = trimmed;
+        if let Some(target) = target.as_deref() {
+            let trimmed: Vec<_> = candidates
+                .into_iter()
+                .filter(|p| {
+                    p.pane == target
+                        || format!("{}:{}", p.socket, p.pane) == target
+                        || p.provider.is_some_and(|pr| pr.label() == target)
+                })
+                .collect();
+            candidates = trimmed;
+        }
+        ensure!(
+            candidates.len() == 1,
+            "pane target is ambiguous or missing: use %id, socket:pane, or a unique agent name"
+        );
+        let pane = &candidates[0];
+        let provider = pane.provider.context("pane has no recognized agent")?;
+        let key = activity::pane_key(pane, "");
+        if let Some(expected) = &identity {
+            ensure!(
+                expected == &key,
+                "agent identity changed; restart the watcher"
+            );
+        } else {
+            identity = Some(key.clone());
+        }
+        let (state, mut evidence, signature) =
+            match agent_monitor::tmux::capture_pane(&pane.socket, &pane.pane, 80) {
+                Ok(raw) => {
+                    let tail = paths::clean(&raw);
+                    let signature =
+                        (!tail.trim().is_empty()).then(|| agent_monitor::pi::hash(tail.as_bytes()));
+                    let (s, e) = activity::classify(provider, &pane.title, &tail);
+                    (s, e, signature)
+                }
+                Err(_) => (
+                    activity::AgentActivity::Unknown,
+                    activity::MatchEvidence {
+                        fallback_reason: "terminal-capture-unavailable".into(),
+                        ..Default::default()
+                    },
+                    None,
+                ),
+            };
+        evidence.sampled_at = paths::now();
+        let (state, evidence) = if watch {
+            tracker.observe(
+                &key,
+                state,
+                evidence,
+                signature,
+                origin.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            )
+        } else {
+            (state, evidence)
+        };
+        let body = serde_json::json!({
+            "agent": provider.label(),
+            "target": pane.target,
+            "title": pane.title,
+            "state": state.label(),
+            "rule": evidence.rule_id,
+            "manifest": evidence.manifest_source,
+            "manifest_version": evidence.manifest_version,
+            "fallback": evidence.fallback_reason,
+            "title_signal": evidence.title_signal,
+            "evidence": evidence,
+            "inferred": true,
+        });
+        if json {
+            if watch {
+                println!("{}", serde_json::to_string(&body)?);
+            } else {
+                return print_json(&body);
+            }
+        } else {
+            println!(
+                "{}  {}",
+                paths::line(&pane.target),
+                activity::describe(provider, state, &evidence)
+            );
+        }
+        sample += 1;
+        if !watch || samples.is_some_and(|n| sample >= u64::from(n)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
-    ensure!(
-        candidates.len() == 1,
-        "pane target is ambiguous or missing: use %id, socket:pane, or a unique agent name"
-    );
-    let pane = &candidates[0];
-    let provider = pane.provider.context("pane has no recognized agent")?;
-    let tail = match agent_monitor::tmux::capture_pane(&pane.socket, &pane.pane, 40) {
-        Ok(raw) => paths::clean(&raw),
-        Err(e) => anyhow::bail!("could not capture pane: {e:#}"),
-    };
-    let (state, evidence) = activity::classify(provider, &pane.title, &tail);
-    let body = serde_json::json!({
-        "agent": provider.label(),
-        "target": pane.target,
-        "title": pane.title,
-        "state": state.label(),
-        "rule": evidence.rule_id,
-        "manifest": evidence.manifest_source,
-        "manifest_version": evidence.manifest_version,
-        "fallback": evidence.fallback_reason,
-        "title_signal": evidence.title_signal,
-    });
-    if json {
-        return print_json(&body);
-    }
-    println!(
-        "{}  {}",
-        paths::line(&pane.target),
-        activity::describe(provider, state, &evidence)
-    );
     Ok(())
 }
 fn resolve_project(
@@ -469,6 +571,9 @@ fn resolve_project(
     let Some(project) = project else {
         return Ok(None);
     };
+    let canonical = paths::canonical(std::path::Path::new(&project))
+        .to_string_lossy()
+        .into_owned();
     let paths = catalog
         .sessions
         .iter()
@@ -479,6 +584,7 @@ fn resolve_project(
         .into_iter()
         .filter(|p| {
             p == &project
+                || p == &canonical
                 || project_name(p) == project
                 || agent_monitor::model::project_label(p).eq_ignore_ascii_case(&project)
         })
@@ -488,4 +594,63 @@ fn resolve_project(
         "project not found or ambiguous: use the full path"
     );
     Ok(matches.into_iter().next())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn agent_watch_arguments_are_bounded_and_snapshot_mode_is_exclusive() {
+        for args in [
+            vec!["agent-monitor", "agent", "explain", "--samples", "3"],
+            vec![
+                "agent-monitor",
+                "agent",
+                "explain",
+                "--watch",
+                "--samples",
+                "0",
+            ],
+            vec![
+                "agent-monitor",
+                "agent",
+                "explain",
+                "--watch",
+                "--samples",
+                "1001",
+            ],
+            vec![
+                "agent-monitor",
+                "agent",
+                "explain",
+                "--watch",
+                "--file",
+                "screen.txt",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let cli = Cli::try_parse_from([
+            "agent-monitor",
+            "agent",
+            "explain",
+            "%1",
+            "--watch",
+            "--samples",
+            "3",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Cmd::Agent {
+                command: Agent::Explain {
+                    watch: true,
+                    samples: Some(3),
+                    json: true,
+                    ..
+                }
+            })
+        ));
+    }
 }

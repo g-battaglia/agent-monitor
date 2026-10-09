@@ -1,0 +1,24 @@
+╭ Search projects ─────────────────────────────────────────────────────────────╮
+│Name or folder…  / or Ctrl-f                                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ Projects · Tree · Recent ────╮╭ Acme Website / website-redesign ─────────────╮
+│› All projects  8             ││To resume    Presence unverified              │
+│  ▾ Repo/                    8││Acme Website                                  │
+│  ├─ Tooling                 1││Last exchange: —                              │
+│  └─ ▾ Acme Website          5││                                              │
+│     └─ ▾ Api                1││Next step                                     │
+│        └─ Tests             1││Check the hero spacing in a real browser.     │
+│                              ││                                              │
+│                              ││Latest saved branch                           │
+│                              ││                                              │
+│                              ││You  —                                        │
+│                              ││Check the new landing copy.                   │
+│                              ││                                              │
+│                              ││Pi  —                                         │
+│                              ││The draft is ready for review.                │
+│                              ││Mobile spacing still needs checking.          │
+│                              ││                                              │
+│                              ││                                              │
+╰ /repo ───────────────────────╯╰──────────────────────────────────────────────╯
+Space fold  E/C all  v tree/flat  s sort  Enter pick  ? actions
+Project order: Recent · latest saved update known for 3/4 matching projects; liv

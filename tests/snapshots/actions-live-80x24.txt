@@ -1,20 +1,20 @@
 ╭ Search sessions ─────────────────────────────────────────────────────────────╮
 │Name, project, or note…  / or Ctrl-f                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╭ All · 5 ─────────────────────╮╭ Acme Website / website-redesign ─────────────╮
+╭ All · 5 ─────────────────────╮╭ Acme Website / Review the navigation and acce╮
 │›╭ Session actions ─────────────────────────────────────────────────────────╮ │
-│ │ [pi] To resume · Acme Website                                            │ │
-│ │ website-redesign                                                         │ │
-│ │ Categories       Catalog 1/1                                             │ │
-│ │   Find         │ › Refresh catalog                                  [R]  │ │
-│ │   Session      │                                                         │ │
-│ │   Folders      │                                                         │ │
-│ │   Navigate     │                                                         │ │
-│ │ ▸ Catalog      │                                                         │ │
-│ │                │                                                         │ │
+│ │ [claude] Live terminal · Acme Website                                    │ │
+│ │ Review the navigation and accessibility of the synthetic website mockup… │ │
+│ │ Categories       Session 2/6                                             │ │
+│ │   Find         │   Focus live terminal                          [Enter]  │ │
+│ │ ▸ Session      │ › – Edit next-step note                            [n]  │ │
+│ │   Folders      │   – Mark Done                                      [d]  │ │
+│ │   Navigate     │   – Mark To resume                                 [r]  │ │
+│ │   Catalog      │   – Undo last change                               [u]  │ │
+│ │                │   Details                                          [i]  │ │
 │ │                │                                                         │ │
 │ │ ──────────────────────────────────────────────────────────────────────── │ │
-│ │ Re-read names, conversations, and openings without starting agents.      │ │
+│ │ Saved session required for notes and decisions.                          │ │
 │ │                                                                          │ │
 │ │ Tab/←→ groups   ↑↓ choose   Enter run   Esc close                        │ │
 │ ╰──────────────────────────────────────────────────────────────────────────╯ │

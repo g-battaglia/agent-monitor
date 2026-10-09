@@ -138,6 +138,28 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn openings(&self) -> impl Iterator<Item = &crate::tmux::PaneIdentity> {
+        self.bindings
+            .iter()
+            .filter_map(|b| b.pane.as_ref())
+            .chain(self.probable.iter())
+    }
+    /// No activity for closed history; conflicting live instances are explicit.
+    pub fn live_activity(&self) -> Option<crate::activity::AgentActivity> {
+        use crate::activity::AgentActivity;
+        if self.bindings.is_empty() && self.probable.is_empty() {
+            return None;
+        }
+        let mut states = self
+            .openings()
+            .map(|p| p.activity.unwrap_or(AgentActivity::Unknown));
+        let first = states.next().unwrap_or(AgentActivity::Unknown);
+        Some(if states.any(|s| s != first) {
+            AgentActivity::Mixed
+        } else {
+            first
+        })
+    }
     /// Adopt the live Pi name only when every verified opening agrees.
     /// Conflicting instances keep the saved file's name instead of
     /// arbitrarily picking one process's local state.
@@ -272,6 +294,15 @@ pub fn project_name(cwd: &str) -> String {
 /// capitalized, so `acme-website` reads as `Acme Website`.
 /// Display only: grouping and identity always use the raw path.
 pub fn project_label(cwd: &str) -> String {
+    if cwd.is_empty() {
+        return "Unknown folder".into();
+    }
+    if cwd == "/" {
+        return "/".into();
+    }
+    if Path::new(cwd) == crate::paths::expand_home(Path::new("~")) {
+        return "Home".into();
+    }
     let pretty = project_name(cwd)
         .split(['.', '-', '_'])
         .filter(|word| !word.is_empty())

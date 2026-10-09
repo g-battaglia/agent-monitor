@@ -6,6 +6,7 @@
 //! examples/benchmarks can drive the UI headlessly. No provider is ever
 //! controlled from here and no task hierarchy is required.
 pub mod activity;
+pub mod details;
 mod formats;
 pub mod model;
 pub mod opencode;

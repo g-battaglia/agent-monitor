@@ -6,8 +6,10 @@ import { join } from "node:path";
 // Test the actual observer with a simulated Pi host, never launch a provider.
 test("startup/name/resume/shutdown write metadata only and clean up", async () => {
   const root = await mkdtemp(join(tmpdir(), "am-presence-"));
-  const previous = process.env.AGENT_MONITOR_HOME;
-  process.env.AGENT_MONITOR_HOME = root;
+  const previous = process.env.TMUX_AGENT_MONITOR_HOME;
+  const legacy = process.env.AGENT_MONITOR_HOME;
+  process.env.TMUX_AGENT_MONITOR_HOME = root;
+  process.env.AGENT_MONITOR_HOME = join(root,"ignored-legacy");
   const { default: extension } = await import("./session-presence.ts");
   const handlers = new Map<string, Function>();
   let session = "native-one", name = "first", leaf = "one";
@@ -49,6 +51,7 @@ test("startup/name/resume/shutdown write metadata only and clean up", async () =
   } finally {
     await handlers.get("session_shutdown")!({}, ctx);
     await rm(root, { recursive: true, force: true });
-    if (previous === undefined) delete process.env.AGENT_MONITOR_HOME; else process.env.AGENT_MONITOR_HOME = previous;
+    if (previous === undefined) delete process.env.TMUX_AGENT_MONITOR_HOME; else process.env.TMUX_AGENT_MONITOR_HOME = previous;
+    if (legacy === undefined) delete process.env.AGENT_MONITOR_HOME; else process.env.AGENT_MONITOR_HOME = legacy;
   }
 });

@@ -1,6 +1,6 @@
-/** agent-monitor presence v1: metadata only, no prompts or session mutations. */
+/** tmux-agent-monitor presence v1: metadata only, no prompts or session mutations. */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -8,7 +8,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
-const configuredRoot = process.env.AGENT_MONITOR_HOME || join(homedir(), ".local/state/agent-monitor");
+const legacyRoot = join(homedir(), ".local/state/agent-monitor");
+const canonicalRoot = join(homedir(), ".local/state/tmux-agent-monitor");
+const defaultRoot = existsSync(join(canonicalRoot, "sessions.db")) ? canonicalRoot
+  : existsSync(legacyRoot) ? legacyRoot : canonicalRoot;
+const configuredRoot = process.env.TMUX_AGENT_MONITOR_HOME || process.env.AGENT_MONITOR_HOME || defaultRoot;
 const root = configuredRoot === "~" ? homedir()
   : configuredRoot.startsWith("~/") ? join(homedir(), configuredRoot.slice(2)) : configuredRoot;
 

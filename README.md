@@ -1,332 +1,329 @@
-# agent-monitor — tmux monitor for coding agents
+# tmux-agent-monitor
+
+**Agent visibility. Your tmux. No extra platform.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)](#)
-[![Tests](https://img.shields.io/badge/Tests-80%20passing-green.svg)](#development)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)](#requirements)
 
-An independent tmux monitor and session explorer for **Claude Code,
-Codex, OpenCode, and Pi**. See which agents are running, browse project
-folders and conversation history, and resume unfinished work from a
-lazygit-style TUI or the CLI. Local, offline, and built around the Unix
-philosophy — not a replacement for your terminal workflow.
+A tmux-native monitor and session explorer for **Claude Code, Codex, OpenCode,
+and Pi**. Track live agents, identify sessions that need attention, inspect
+local conversation history, and resume work from a keyboard-driven Rust TUI
+or a scriptable CLI.
 
-![agent-monitor tmux session explorer and coding agent monitor TUI](assets/screenshot.png)
+Keep tmux in charge of terminals. Add visibility, not another runtime.
 
-```sh
-cargo build --release --locked
-./target/release/agent-monitor
-```
+![Synthetic four-agent session explorer with live activity badges](assets/screenshot.png)
 
-## Overview
+## Why this exists
 
-`agent-monitor` is an independent tmux companion for **Claude Code,
-OpenAI Codex, Pi, and OpenCode**. It indexes local conversation history
-into a private SQLite catalog and presents a three-panel terminal UI:
-projects, sessions, and conversation preview. No task registration,
-mandatory extension, or workspace manager is needed.
+`tmux-agent-monitor` started with a practical objection: **Herdr felt bloated
+for an existing tmux workflow.** tmux already provides the terminal lifecycle,
+panes, windows, and detach/attach semantics. We do not need a second platform
+to own those terminals just to see which agents are working and recover a
+conversation.
 
-| Agent | Local history | Explicit resume command |
-|---|---|---|
-| Claude Code | `~/.claude/projects` (JSONL) | `claude --resume <id>` |
-| OpenAI Codex | `~/.codex/sessions` (rollout JSONL) | `codex resume <id>` |
-| OpenCode | `~/.local/share/opencode/opencode.db` (SQLite) | `opencode --session <id>` |
-| Pi | `~/.pi/agent/sessions` (JSONL v3) | `pi --session <file>` |
+[Herdr](https://herdr.dev) takes a broader approach: its own background server,
+terminal ownership, workspace/tab hierarchy, and agent automation. That scope
+can be useful, but it adds architecture and operational overhead outside this
+project's requirements.
 
-`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_DATA_HOME` override the
-corresponding default locations. Pi also supports custom session roots.
-Codex names come from its local `session_index.jsonl`; bootstrap instructions
-and environment blocks are not used as conversation titles. All four agents
-have plugin-free live detection in tmux. Terminals whose
-saved session cannot be proven appear as selectable **live terminal**
-rows in All and Open, never as invented transcript associations. All keeps open
-terminals at the top so they are not buried beneath imported history.
+**Herdr is also an inspiration.** Its
+[documented agent detection](https://herdr.dev/docs/agents) demonstrates how
+process identity and scoped terminal signals can expose useful live states.
+This project independently implements that idea with local manifests and
+explicit evidence, while leaving terminal management to tmux.
 
-## Why not Herdr?
+The boundary is deliberate:
 
-[Herdr](https://herdr.dev) solves a similar problem, but it is a
-server-based workspace manager: a background server, remote manifest
-updates, workspace/tab rollups, notifications, and script-wait
-primitives. That is a lot of machinery if all you want is to find a
-conversation and resume it.
+- **Compose with tmux.** Observe existing panes; focus or resume only on request.
+- **Keep the runtime local.** No additional server, telemetry, remote manifest
+  updates, or runtime network requests.
+- **Separate observation from decisions.** A finished agent turn is not a
+  completed task. Notes and Done remain explicit user choices.
+- **Expose ordinary commands.** Use the TUI interactively or query JSON from
+  the CLI. No task-registration protocol or mandatory plugin.
 
-`agent-monitor` follows the Unix philosophy instead:
+## Capabilities
 
-- **Do one thing.** It monitors and resumes sessions. It does not
-  manage your workspaces, send notifications, or run a server.
-- **Compose with tmux, don't replace it.** Your panes, sessions, and
-  workflow stay yours. Detection is read-only (`list-panes`,
-  `capture-pane`): no `send-keys`, no pane closes, no config edits.
-  Focusing a pane or creating a resume window requires your action.
-- **Independent and offline.** One binary, one SQLite file, zero
-  network. No background daemon, no remote manifest fetches, no
-  telemetry. It works the same on a laptop and on a headless server.
-- **Text in, text out.** Every workflow step is a CLI command with JSON
-  output. Pipe it into `jq`, `fzf`, or your own scripts.
+- **Automatic discovery:** derive projects and conversations from local agent
+  histories, without manually registering tasks or workspaces.
+- **Live activity:** show `working`, `finished`, `idle`, `blocked`, `waiting`,
+  `error`, `unknown`, or `mixed`, with inspectable detection evidence.
+- **Project navigation:** foldable folder tree, flat layout, alphabetical or
+  latest-saved-update ordering, and project/session/text search.
+- **Conversation inspection:** paginated previews, branch selection, optional
+  tool output, and metadata-only project/session Details.
+- **Explicit resume:** revalidate identity and cwd, then use provider-specific
+  argv to focus an existing pane or create a resume window.
+- **Durable work decisions:** History, To resume, Done, next-step notes, and undo
+  in a private SQLite catalog, independent of transient terminal activity.
 
-The independently implemented screen detector follows
-[Herdr's documented live-terminal approach](https://herdr.dev/docs/agents):
-scoped rules, prioritized approval/working signals, and explicit fallbacks.
-It adds a memory-only working → stable idle transition for **finished**;
-no server, remote manifest updates, or mandatory plugin is needed.
+## Requirements
 
-## Features
-
-- **Automatic discovery.** Projects, names, and history are derived from
-  stored session files. No manual registration and no extension required.
-- **Resume-oriented workflow.** Sessions carry an explicit state — history,
-  to-resume, or done — plus a short next-step note. States are user
-  decisions; activity or idleness never changes them implicitly.
-- **Live pane awareness.** Verified extension records (`[O]`), passive
-  title/folder hints (`[~]`), and screen-inferred activity
-  (`working/finished/idle/waiting/blocked/error/unknown`) distinguish proven openings from
-  guesses. Duplicate names are never associated arbitrarily; screen
-  state never changes stored work state.
-- **Safe resume.** Reopening a closed session uses exact argv
-  (see the provider-specific commands above) in the project directory,
-  preferring a new tmux window, otherwise a new detached session. Verified or probable
-  openings block accidental duplicates.
-- **Readable previews.** Paginated newest-first pages, branch selection,
-  optional tool output. Reasoning traces and images stay hidden.
-- **Search everywhere.** The top bar filters the active panel: projects,
-  session names/notes, or the current conversation text.
-- **Scriptable.** The full workflow (list, show, resume, annotate, undo,
-  sync) is available as CLI commands with JSON output.
+- macOS or Linux, with `tmux` and `ps` available.
+- An interactive terminal for the TUI; query commands run headlessly.
+- Rust **1.89+** for source builds. Agent CLIs are required only when resuming
+  their sessions; the monitor does not install or configure them.
 
 ## Installation
 
-### Homebrew (macOS and Linux)
-
-Install through the [Homebrew tap](https://github.com/g-battaglia/homebrew-agent-monitor)
-on macOS or Linux:
+### Homebrew
 
 ```sh
-brew tap g-battaglia/agent-monitor
-brew install --HEAD g-battaglia/agent-monitor/agent-monitor
-agent-monitor
+brew tap g-battaglia/tmux-agent-monitor
+brew install --HEAD g-battaglia/tmux-agent-monitor/tmux-agent-monitor
+tmux-agent-monitor
 ```
 
-This development formula builds from `main` using Rust and installs tmux
-as a dependency. It does not install agents, extensions, or background
-services. Tagged, checksummed releases can replace HEAD installation later.
-
-### Build from source
-
-Build and launch the explorer:
+The [tap](https://github.com/g-battaglia/homebrew-tmux-agent-monitor) builds
+`main` with the locked Rust dependencies and installs tmux as a runtime
+dependency. The formula is **HEAD-only**, not a tagged release. It does not
+install agent clients, extensions, or background services.
 
 ```sh
+brew upgrade --fetch-HEAD g-battaglia/tmux-agent-monitor/tmux-agent-monitor
+```
+
+### Source
+
+```sh
+git clone https://github.com/g-battaglia/tmux-agent-monitor.git
+cd tmux-agent-monitor
 cargo build --release --locked
-./target/release/agent-monitor
+./target/release/tmux-agent-monitor
 ```
 
-It always opens on **All projects / Open**, regardless of the current
-folder or saved filters. `pick --project` explicitly selects a project.
-Type `/` to search, `Enter` to open a project or jump to a session, `f` to
-switch views (All, To resume, Open, Done), and `?` for the contextual action menu.
-The menu shows one category at a time: `Tab` / `Shift-Tab` or `←/→`
-changes category; `↑/↓` selects an action and `Enter` runs it. Direct
-shortcuts work across categories. Click a category or action with the mouse,
-or click outside / press `Esc` to close. Disabled actions remain readable
-and explain why they are unavailable (for example, live-only terminals
-cannot store notes or decisions). Narrow terminals use a compact category
-selector; context text is clipped with an ellipsis rather than overflowing.
-Selecting **All projects** clears project/session search but keeps the
-current view; choose `f` → All to browse the complete history.
-
-The Projects panel follows the active view and displays a folder tree,
-not ambiguous duplicate-name suffixes. Its lower border shows the common
-root; nested project folders are indented. Counts show matching/total
-sessions. Empty folder metadata is labeled **Unknown folder**, never
-shown as a blank project. `i` opens scrollable **Details** for the
-highlighted project or session, including the full folder and history storage.
-In **Projects** (`1` to focus), `Space` toggles the highlighted branch;
-`←/→` fold or navigate it. Click its `▸/▾` triangle to toggle with the mouse.
-`C` collapses all branches, `E` expands all; both switch to Tree if needed.
-`Space` on **All projects** toggles all branches. Closed branches show how
-many project folders are hidden. Ancestor folder groups (names ending `/`)
-remain visible in Open even without saved conversations of their own;
-`Enter` toggles a group instead of changing project scope. `i` summarizes
-all its nested projects. These are navigation folders, never invented sessions.
-`v` switches between **Tree** and the original-style **Flat** list; `s`
-switches **A–Z / Recent**. `v/s/E/C` work from every panel outside search input
-and focus Projects; Flat omits ancestor groups. The panel title shows both choices; all controls
-are also in `?`. Recent means latest saved exchange, not inferred activity:
-tree siblings use the newest saved update anywhere in their branch, while flat
-sorts each individual project. Unknown live-only timestamps never imply recency;
-the status line reports how many matching projects have known saved updates. Duplicate flat names include their parent path.
-Project search reveals matches inside closed branches without forgetting folds.
-Layout, order, and folds last for the current monitor run and never change
-the active project, session view, notes, or work decisions.
-
-Every session has an agent badge, such as `[pi][R]` or `[claude][~]`.
-`R` refreshes without changing filters. Search for `claude`, `codex`, `pi`,
-or `opencode` to find that agent's rows.
-
-Jump directly to one project:
+Or install the binary directly:
 
 ```sh
-./target/release/agent-monitor pick --project acme-website
+cargo install --git https://github.com/g-battaglia/tmux-agent-monitor.git --locked
 ```
 
-## Screenshot
+## Supported histories
 
-The image above is generated from synthetic data by
-`scripts/screenshot.py` (via `cargo run --example layout`), so no real
-session content ever appears in the repository. Regenerate it with:
+| Agent | Default local source | Explicit resume argv |
+|---|---|---|
+| Claude Code | `~/.claude/projects` — top-level JSONL | `claude --resume <id>` |
+| Codex | `~/.codex/sessions` — rollout JSONL | `codex resume <id>` |
+| OpenCode | `~/.local/share/opencode/opencode.db` — SQLite | `opencode --session <id>` |
+| Pi | `~/.pi/agent/sessions` — JSONL v3 | `pi --session <file>` |
 
-```sh
-python3 scripts/screenshot.py
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_DATA_HOME` override the corresponding
+locations. Pi supports custom roots, including project `.pi/settings.json`;
+additional undeclared paths can be added with `sources add`. Codex titles also
+use its local `session_index.jsonl`, without turning bootstrap instructions
+into conversation names.
+
+Live panes without a proven history association remain selectable **live
+terminal** rows, not invented conversations. They can be focused, but cannot
+carry durable notes or Done decisions. Duplicate identities are never resolved
+by arbitrary association.
+
+## TUI workflow
+
+Startup is always **All projects / Open**. The current cwd and previous filters
+do not silently narrow the catalog. Use `f` to choose All, To resume, Open, or
+Done; selecting All projects clears project/session search and preserves the
+current view. Open terminals remain at the top of All.
+
+The three panels are **Projects**, **Sessions**, and **Preview**. Provider
+badges, work decisions, presence, and activity are independent:
+
+```text
+[pi][R][O] [working]       verified opening; marked To resume
+[claude][~] [finished]    probable opening; observed turn end
 ```
 
-## Key bindings
+`[R]` means To resume; `[O]` means a verified Pi opening; `[~]` is a probable
+association. Verification proves identity, not the inferred activity state.
+Search for a provider or activity word to find matching session rows.
 
 | Key | Action |
 |---|---|
+| `1/2/3`, `h/l`, `Tab` | Focus panels |
 | `j/k`, arrows | Move or scroll |
-| `h/l`, `Tab` | Switch panel |
-| `Space`, `←/→` in Projects | Toggle or navigate a branch |
-| `E` / `C` | Expand / collapse all branches (switches to Tree) |
-| `v` / `s` | Tree/flat layout / alphabetical/recent order |
-| `Enter` | Open the pane, or offer to resume |
-| `f` / `p` | Change view / pick project |
-| `r` / `d` | Mark to resume / done |
-| `n` / `u` | Next-step note / undo |
-| `/`, `Ctrl-f`, click the bar | Search projects, names, notes, or text |
-| `z` | Expand the conversation |
-| `[` / `]` | Older / newer pages |
-| `b` / `t` | Branches / tool output |
-| `o` / `i` | Browse open panes / project or session Details |
-| `gg`, `G`, `Ctrl-d/u` | Jump to ends, half pages |
-| `Esc`, `?`, `q` | Back, actions, quit (monitor only) |
+| `Enter` | Select a project, focus a pane, or offer resume |
+| `f` / `p` | Session view / project picker |
+| `Space`, `←/→` in Projects | Fold or navigate a branch |
+| `E` / `C` | Expand / collapse all, switching to Tree if needed |
+| `v` / `s` | Tree/flat layout / alphabetical/recent ordering |
+| `/`, `Ctrl-f`, search-bar click | Search the active panel |
+| `r` / `d` | Mark To resume / Done |
+| `n` / `u` | Edit next-step note / undo |
+| `o` / `i` | Open panes / project or session Details |
+| `z`, `[` / `]`, `b` / `t` | Expanded preview, pages, branches, tool output |
+| `gg`, `G`, `Ctrl-d/u` | Ends / half-page scrolling |
+| `R` | Refresh without changing scope |
+| `?`, `Esc`, `q` | Action menu, back, quit the monitor only |
 
-![Contextual action menu with readable disabled-action reasons](assets/actions.png)
+Ancestor folder groups remain navigable when their own sessions do not match
+the active view. Enter folds a group; Details summarizes its descendants.
+Recent ordering uses saved conversation updates, **not inferred activity**.
+Search reveals matching projects without discarding folds. Layout, ordering,
+and folds last for one run and do not modify notes or work decisions.
 
-## CLI reference
+The action menu groups commands by category. `Tab` / `Shift-Tab` or `←/→`
+changes category, `↑/↓` selects, and Enter executes. Direct shortcuts work
+across categories; disabled actions remain readable and explain why they
+cannot run. Narrow terminals use a compact category selector.
+
+![Categorized action menu with explicit disabled-action reasons](assets/actions.png)
+
+## CLI
 
 ```sh
-agent-monitor sessions --all --project acme-website
-agent-monitor sessions --open --json
-agent-monitor agent explain --file screen.txt --agent codex
-agent-monitor show <id>
-agent-monitor details <id>
-agent-monitor details --project acme-website --json
-agent-monitor details                       # all-project overview
-agent-monitor done <id>
-agent-monitor reopen <id>
-agent-monitor note <id> 'Check the timeout'
-agent-monitor undo <id>
-agent-monitor open <id> [--resume]
-agent-monitor sync
-agent-monitor sources list
-agent-monitor sources add /path/to/sessions
-agent-monitor integration pi status
+tmux-agent-monitor sessions --open --json
+tmux-agent-monitor sessions --all --project acme-website
+tmux-agent-monitor show <id> --json
+tmux-agent-monitor details <id>
+tmux-agent-monitor details --project acme-website --json
+tmux-agent-monitor details                         # catalog overview
+tmux-agent-monitor pick --project acme-website
+
+tmux-agent-monitor note <id> 'Review the timeout handling'
+tmux-agent-monitor done <id>
+tmux-agent-monitor reopen <id>
+tmux-agent-monitor undo <id>
+tmux-agent-monitor open <id> --resume
+
+tmux-agent-monitor sync
+tmux-agent-monitor sources list
+tmux-agent-monitor sources add /path/to/sessions
 ```
 
-`<id>` accepts the agent session id or the catalog id shown by
-`sessions --json`; ambiguous ids are rejected. `open` jumps to a verified
-opening when one exists; otherwise it asks for confirmation (or `--resume`
-in scripts) and revalidates identity, folder, and presence before launch.
-`sessions --open --json` returns an object with `sessions` and `panes`,
-including unidentified agent terminals; other session listings return arrays.
-Live-only rows can be focused but cannot carry durable notes or Done decisions.
-`details` displays project/session metadata rather than transcript bodies;
-`details --project <folder>` includes every agent's sessions in that folder.
-In the TUI, `i` and the **Details** menu action show the same information.
-Use arrows, `j/k`, Page Up/Down, or the mouse wheel to scroll longer details.
+`<id>` accepts native or catalog session ids; ambiguity is rejected.
+`sessions --open --json` returns `{ "sessions": [...], "panes": [...] }`;
+other session listings return arrays. Details reports metadata, not transcript
+bodies. Query output can be consumed by `jq`, `fzf`, or your own tooling.
 
-## Live agent activity (no plugin)
+`open` focuses a verified opening when available. Starting an agent requires
+confirmation or the explicit `--resume` flag. Identity, cwd, and presence are
+rechecked before launch; probable or verified openings prevent accidental
+duplicate resume attempts. Commands never inject keystrokes or answer
+permissions on your behalf.
 
-Every pane running a recognized agent (Pi, Claude, Codex, OpenCode)
-appears in the main All/Open list, the `o` picker, and `sessions --open`,
-with a live badge directly in the session row, for example
-`[pi][R][O] [working]` or `[claude][~] [finished]`. Verified Pi identity
-and inferred terminal activity are independent: both verified and probable
-openings are sampled. `i` / Details includes the state and its evidence.
-Search for `working`, `finished`, `waiting`, or another state to find matching rows.
+## Activity detection
 
-| Live state | Meaning |
+A worker samples recognized agent panes approximately every two seconds,
+including verified Pi openings. It reads the **current viewport**, not
+scrollback, through bounded `tmux capture-pane -S 0` calls. Prioritized local
+rules examine scoped bottom lines, title signals, and known permission UI.
+Captured text is discarded after matching; only bounded identity keys,
+fingerprints, and observation state are retained in memory.
+
+| State | Interpretation |
 |---|---|
 | `working` | Recognized spinner, interrupt/status line, or title signal |
-| `finished` | Observed working, then at least two stable idle snapshots ≥1.5s apart |
+| `finished` | Observed working, then two stable idle samples at least 1.5s apart |
 | `idle` | Ready/no recognized work; no completed turn was observed |
 | `blocked` | Recognized permission/approval UI |
 | `waiting` | Recognized interactive selection/question UI |
-| `error` | Recognized API/request failure; not a generic tool error |
-| `unknown` | No usable signal, empty snapshot, or capture unavailable |
-| `mixed` | Multiple openings of one conversation disagree |
+| `error` | Recognized API/request failure, not a generic tool error |
+| `unknown` | No usable signal, unavailable capture, or empty screen without a signal |
+| `mixed` | Multiple openings of the same conversation disagree |
 
-The worker samples about every two seconds. Detection uses only the current
-terminal viewport (`tmux capture-pane -S 0`), never scrollback, with scoped
-bottom nonempty lines and stale-response guards. Captured text is matched
-in memory and dropped — never logged or stored. Only bounded fingerprints
-and observation counters survive in memory for this monitor run. Process
-identity changes, verified Pi session-generation changes, missing panes,
-errors, and unavailable captures invalidate completion inference.
+**These are observations, not guarantees.** Finished means an inferred end of
+an observed turn, not successful task completion and never automatic Done.
+An agent already idle when monitoring begins stays idle. Process or verified
+session-generation changes, missing panes, errors, and capture failures reset
+completion inference. Unmatched known-agent output can fall back to idle;
+Codex without a title signal can remain unknown.
 
-**Finished is a guessed end of an observed agent turn, not task success or
-Done.** Starting the monitor on an already idle agent reports idle, not
-finished. No screen state changes notes, To resume, or durable Done.
-
-`agent explain` shows the provenance behind any classification:
+Inspect rule provenance or watch transitions without opening the catalog:
 
 ```sh
-agent-monitor agent explain %3 --json
-agent-monitor agent explain --file screen.txt --agent codex
-agent-monitor agent explain %3 --watch --json       # JSON Lines, until Ctrl-C
-agent-monitor agent explain %3 --watch --samples 5  # bounded transition watch
+tmux-agent-monitor agent explain %3 --json
+tmux-agent-monitor agent explain %3 --watch --json       # JSON Lines until Ctrl-C
+tmux-agent-monitor agent explain %3 --watch --samples 5
+tmux-agent-monitor agent explain --file screen.txt --agent codex
 ```
 
-A one-shot snapshot cannot infer a completed turn; the TUI and `--watch`
-can because they observe transitions. Agent diagnostics do not open the state
-SQLite database. Local TOML overrides support `priority`,
-`bottom_non_empty_lines`, `line_starts_any`, and the legacy ordered predicates;
-`finished`/`mixed` are derived states, not snapshot-rule states. Invalid or
-oversized overrides fall back to bundled rules with a diagnostic warning.
+One snapshot cannot establish a finished turn. `--watch` and the TUI can
+because they keep observation history. The watcher stops if the selected
+process identity changes.
 
-Sandbox/VM wrappers hide the real agent binary; run them as
-`AGENT_MONITOR_AGENT=codex fence -- codex` (per-command only, never
-exported globally) to select the right manifest. Custom rules live in
-`~/.config/agent-monitor/agent-detection/<agent>.toml` and always win
-over the bundled manifests. No rule, manifest, or screen guess ever
-changes resume state, notes, or Done decisions.
+Overrides live in `~/.config/tmux-agent-monitor/agent-detection/<agent>.toml`.
+They support prioritized, scoped predicates; invalid/oversized files fall back
+to bundled rules with a diagnostic warning. `finished` and `mixed` are derived
+states, not snapshot-rule states. No manifests are fetched remotely.
 
-## Optional presence extension
-
-Pi pane matching works without installation (exact title + folder ⇒
-probable `[~]`). For proven identity (`[O]`), including across
-in-process session switches, install the bundled Pi extension:
+For opaque sandbox wrappers, use a **per-command** hint, not a globally
+exported variable:
 
 ```sh
-./target/release/agent-monitor integration pi install
+TMUX_AGENT_MONITOR_AGENT=codex fence -- codex
 ```
 
-Then run `/reload` in each already-open Pi session; new sessions load it
-automatically. The monitor never sends input to agent sessions on your
-behalf.
+## Optional Pi identity verification
 
-## Data and privacy
+Live detection works without plugins. Pi title/cwd matching provides probable
+identity; the bundled metadata-only observer adds verified identity across
+in-process session switches:
 
-- Transcripts are read-only; provider JSONL files and the OpenCode database
-  remain the source of truth. OpenCode connections use SQLite read-only mode
-  and query only session/message/part tables, never account or credential tables.
-- State lives in `~/.local/state/agent-monitor/sessions.db` (directory
-  0700, database 0600). Override with `AGENT_MONITOR_HOME` or `--data-dir`.
-- No network access, no telemetry, no credentials read.
-- Display strings are sanitized (ANSI/control/bidi sequences stripped).
+```sh
+tmux-agent-monitor integration pi status
+tmux-agent-monitor integration pi install
+```
 
-## Limits
+Install is explicit. Existing Pi sessions require a user-issued `/reload`;
+the monitor never installs or reloads an extension automatically. A new
+installation uses `tmux-agent-monitor-presence.ts`; an existing owned legacy
+observer keeps its filename to avoid loading duplicates.
 
-- Pi JSONL v3, Claude top-level JSONL, Codex rollout JSONL, and OpenCode
-  SQLite (`session`/`message`/`part` or `session_v2`/`session_message`).
-  Unsupported formats are reported, not migrated. Claude subagent files
-  are excluded; older OpenCode JSON-directory storage is not indexed.
-- Caps: 512 MiB JSONL files, 8 MiB lines, 100k preview entries. OpenCode
-  reads are bounded to 100 sessions per batch and 64 MiB of message data
-  per session. Limited previews are labeled.
-- Unsaved sessions (`--no-session`, or before the first message) appear
-  only while running and cannot be resumed from the catalog.
-- Custom session directories are discovered via standard locations and
-  `.pi/settings.json`; undeclared paths can be added with `sources add`.
+## Architecture and safety
+
+Rust + Ratatui for the TUI; SQLite for the catalog; tmux for terminals.
+Provider files remain the source of truth. Bounded incremental readers index
+history and build previews; the worker performs filesystem/database/process
+I/O and supplies cached snapshots to the UI. Rendering and navigation do not
+perform blocking I/O. Detail requests are latest-wins; decision mutations are
+ordered and acknowledged.
+
+- **Read-only provider storage.** JSONL transcripts are not edited. OpenCode
+  uses read-only/query-only SQLite and only session/message/part tables,
+  never account or credential tables.
+- **Private local state.** `sessions.db` uses owner-only storage: directory
+  `0700`, database `0600`; unsafe symlinks and permissions are rejected.
+- **Explicit terminal actions.** Discovery uses listing and capture commands.
+  No `send-keys`, pane closure, tmux configuration edits, or implicit launches.
+- **No runtime remote requests.** No telemetry, transcript uploads, credential
+  reads, or remote detection manifests.
+- **Safe display.** ANSI, control, and bidi-spoofing sequences are stripped.
+
+### Rename compatibility
+
+Previously named `agent-monitor`; the binary and Cargo package are now
+`tmux-agent-monitor`. GitHub redirects preserve old repository links. The tap
+also retains `agent-monitor` as a formula alias; the installed command uses
+the new name.
+
+Fresh state defaults to `~/.local/state/tmux-agent-monitor/sessions.db`.
+An existing legacy `~/.local/state/agent-monitor` directory is reused unless
+a canonical catalog already exists. **No databases are moved or deleted.**
+Use `--data-dir` to select a directory explicitly, or set
+`TMUX_AGENT_MONITOR_HOME`. The legacy `AGENT_MONITOR_HOME` alias remains valid;
+the canonical environment variable takes precedence.
+
+Canonical detection overrides take precedence, with legacy
+`~/.config/agent-monitor/agent-detection` as a per-agent fallback.
+`AGENT_MONITOR_AGENT` and `AGENT_MONITOR_TMUX_CLIENT` remain accepted aliases
+for `TMUX_AGENT_MONITOR_AGENT` and `TMUX_AGENT_MONITOR_TMUX_CLIENT`.
+Existing observers remain untouched until explicitly updated; for custom
+roots, update/reload the observer before switching to the new environment
+variable. Legacy `board.db` and `library.db` are never opened or migrated.
+
+## Format and resource limits
+
+- Pi JSONL v3, Claude top-level JSONL, Codex rollout JSONL, and OpenCode SQLite
+  (`session`/`message`/`part` or `session_v2`/`session_message`) are supported.
+  Unsupported formats are reported, not migrated. Claude subagent files and
+  older OpenCode JSON-directory storage are excluded.
+- JSONL: 512 MiB per file, 8 MiB per line, 100k preview entries. OpenCode:
+  100 sessions per indexing batch, 64 MiB of message data per session.
+  Partial previews are labeled.
+- Unsaved sessions appear only while running and cannot be resumed from history.
+  Screen inference can miss short turns or unfamiliar UI layouts.
 
 ## Development
 
@@ -334,16 +331,18 @@ behalf.
 cargo fmt --check
 cargo test --locked
 cargo clippy --all-targets --locked -- -D warnings
-cargo build --locked
+cargo build --release --locked
 bun test integrations/pi
-python3 scripts/smoke.py
-cargo run --release --example latency
-python3 scripts/latency.py                 # after the release build
-cargo run --example layout                # synthetic preview
+python3 scripts/smoke.py ./target/release/tmux-agent-monitor
+cargo run --release --locked --example latency
+python3 scripts/latency.py
+python3 scripts/screenshot.py
+python3 scripts/screenshot.py --menu
 ```
 
-Tests use temporary directories and stub executables; no real agent
-process is ever started. Performance figures are local measurements.
+Tests use disposable data and stub executables; they never start real agents,
+focus user panes, or close terminals. Screenshots are generated from synthetic
+fixtures, not personal conversations. No CI workflows are included.
 
 ## License
 

@@ -1,11 +1,12 @@
 //! Deterministic four-agent preview with synthetic folders and conversations.
 //! No real agent, tmux server, session file, or catalog is read.
-use agent_monitor::{
+use ratatui::{Terminal, backend::TestBackend};
+use tmux_agent_monitor::{
+    activity::{AgentActivity, MatchEvidence},
     model::*,
     tmux::PaneIdentity,
     ui::{App, render},
 };
-use ratatui::{Terminal, backend::TestBackend};
 fn main() -> anyhow::Result<()> {
     let mut app = App::default();
     let demos = [
@@ -59,12 +60,12 @@ fn main() -> anyhow::Result<()> {
                     title: name.into(),
                     provider: Some(provider),
                     activity: Some(match i {
-                        0 => agent_monitor::activity::AgentActivity::Working,
-                        1 => agent_monitor::activity::AgentActivity::Finished,
-                        2 => agent_monitor::activity::AgentActivity::Blocked,
-                        _ => agent_monitor::activity::AgentActivity::Idle,
+                        0 => AgentActivity::Working,
+                        1 => AgentActivity::Finished,
+                        2 => AgentActivity::Blocked,
+                        _ => AgentActivity::Idle,
                     }),
-                    activity_evidence: Some(agent_monitor::activity::MatchEvidence {
+                    activity_evidence: Some(MatchEvidence {
                         rule_id: "synthetic-status".into(),
                         manifest_source: "bundled".into(),
                         manifest_version: 2,
@@ -130,7 +131,7 @@ fn main() -> anyhow::Result<()> {
                     .into();
             app.select(0);
         }
-        let mut menu = agent_monitor::ui::menu::CommandMenu::new(&app);
+        let mut menu = tmux_agent_monitor::ui::menu::CommandMenu::new(&app);
         if live {
             menu.selected = menu.actions.iter().position(|a| a.shortcut == "n").unwrap();
         }

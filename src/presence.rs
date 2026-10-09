@@ -12,7 +12,8 @@ use std::{
 };
 
 pub const EXTENSION: &str = include_str!("../integrations/pi/session-presence.ts");
-const MARKER: &str = "/** agent-monitor presence v1:";
+const MARKER: &str = "/** tmux-agent-monitor presence v1:";
+const LEGACY_MARKER: &str = "/** agent-monitor presence v1:";
 
 fn raw_record(path: &Path) -> Result<Bridge> {
     paths::private_file(path)?;
@@ -127,7 +128,15 @@ pub fn focus(binding: &Binding) -> Result<()> {
 
 /// Where the extension lives inside the user's Pi profile.
 pub fn installed_path() -> PathBuf {
-    paths::pi_dir().join("extensions/agent-monitor-presence.ts")
+    extension_path(&paths::pi_dir())
+}
+fn extension_path(profile: &Path) -> PathBuf {
+    let legacy = profile.join("extensions/agent-monitor-presence.ts");
+    if fs::symlink_metadata(&legacy).is_ok() {
+        legacy
+    } else {
+        profile.join("extensions/tmux-agent-monitor-presence.ts")
+    }
 }
 
 /// Install our own extension file atomically (0600), never touching
@@ -147,7 +156,7 @@ pub fn install() -> Result<PathBuf> {
     if fs::symlink_metadata(&path).is_ok() {
         owned_extension(&path)?;
     }
-    let tmp = parent.join(format!(".agent-monitor-{}.tmp", uuid::Uuid::new_v4()));
+    let tmp = parent.join(format!(".tmux-agent-monitor-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
         use std::io::Write;
         let mut file = fs::OpenOptions::new()
@@ -174,8 +183,9 @@ fn owned_extension(path: &Path) -> Result<()> {
             && stat.uid() == unsafe { libc::geteuid() },
         "extension file is unsafe"
     );
+    let text = fs::read_to_string(path)?;
     ensure!(
-        fs::read_to_string(path)?.starts_with(MARKER),
+        text.starts_with(MARKER) || text.starts_with(LEGACY_MARKER),
         "refusing to overwrite a foreign extension"
     );
     Ok(())
@@ -191,6 +201,23 @@ pub fn remove() -> Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::model::Bridge;
+    #[test]
+    fn rename_reuses_owned_legacy_observer_without_installing_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            extension_path(dir.path()),
+            dir.path().join("extensions/tmux-agent-monitor-presence.ts")
+        );
+        let legacy = dir.path().join("extensions/agent-monitor-presence.ts");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, format!("{LEGACY_MARKER} fixture */")).unwrap();
+        assert_eq!(extension_path(dir.path()), legacy);
+        assert!(owned_extension(&legacy).is_ok());
+        fs::write(&legacy, EXTENSION).unwrap();
+        assert!(owned_extension(&legacy).is_ok());
+        fs::write(&legacy, "foreign observer").unwrap();
+        assert!(owned_extension(&legacy).is_err());
+    }
     fn fixture() -> (tempfile::TempDir, PathBuf, Bridge) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("private");

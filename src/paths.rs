@@ -10,17 +10,29 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Resolve the state root: explicit `--data-dir`, then
-/// `$AGENT_MONITOR_HOME`, then `~/.local/state/agent-monitor`.
-/// Legacy databases in the same parent are never opened here; the
-/// explorer only ever touches `sessions.db`.
+/// Explicit --data-dir, canonical environment variable, then legacy alias.
+/// Reuse existing legacy state without moving files or splitting presence.
+/// Only sessions.db is used; board.db/library.db are never opened.
 pub fn root(data_dir: Option<PathBuf>) -> Result<PathBuf> {
     let root = data_dir
+        .or_else(|| std::env::var_os("TMUX_AGENT_MONITOR_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("AGENT_MONITOR_HOME").map(PathBuf::from))
-        .unwrap_or_else(|| home().join(".local/state/agent-monitor"));
+        .unwrap_or_else(|| default_root(&home()));
     let root = expand_home(&root);
     ensure!(root.is_absolute(), "data directory must be absolute");
     Ok(root)
+}
+
+fn default_root(home: &Path) -> PathBuf {
+    let canonical = home.join(".local/state/tmux-agent-monitor");
+    let legacy = home.join(".local/state/agent-monitor");
+    if fs::symlink_metadata(canonical.join("sessions.db")).is_ok() {
+        canonical
+    } else if fs::symlink_metadata(&legacy).is_ok() {
+        legacy
+    } else {
+        canonical
+    }
 }
 
 fn home() -> PathBuf {
@@ -170,6 +182,26 @@ pub fn pi_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rename_preserves_legacy_state_without_moving_or_opening_databases() {
+        let home = tempfile::tempdir().unwrap();
+        let fresh = home.path().join(".local/state/tmux-agent-monitor");
+        assert_eq!(default_root(home.path()), fresh);
+        let legacy = home.path().join(".local/state/agent-monitor");
+        secure_dir(&legacy).unwrap();
+        fs::write(legacy.join("sessions.db"), b"fixture").unwrap();
+        assert_eq!(default_root(home.path()), legacy);
+        assert_eq!(fs::read(legacy.join("sessions.db")).unwrap(), b"fixture");
+        secure_dir(&fresh).unwrap();
+        assert_eq!(default_root(home.path()), legacy);
+        fs::write(fresh.join("sessions.db"), b"new fixture").unwrap();
+        assert_eq!(default_root(home.path()), fresh);
+        fs::remove_file(fresh.join("sessions.db")).unwrap();
+        fs::remove_dir_all(&legacy).unwrap();
+        std::os::unix::fs::symlink(&fresh, &legacy).unwrap();
+        assert_eq!(default_root(home.path()), legacy);
+        assert!(secure_dir(&default_root(home.path())).is_err());
+    }
     #[test]
     fn terminal_controls_and_directional_spoofing_are_removed() {
         let raw = "safe\x1b]0;title\x07\x1b[31mtext\x1b[0m\u{202e}hidden\nnext";

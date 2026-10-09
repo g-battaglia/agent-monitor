@@ -1,10 +1,10 @@
 //! Synthetic render benchmark: 10k sessions, 100 projects, one big page.
-use agent_monitor::{
+use ratatui::{Terminal, backend::TestBackend};
+use std::time::Instant;
+use tmux_agent_monitor::{
     model::*,
     ui::{App, render},
 };
-use ratatui::{Terminal, backend::TestBackend};
-use std::time::Instant;
 fn main() -> anyhow::Result<()> {
     let mut app = App {
         view: View::All,

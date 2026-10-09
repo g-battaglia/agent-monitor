@@ -72,7 +72,7 @@ pub fn socket_key(socket: &str) -> String {
 /// Other users are ignored before any matching happens.
 ///
 /// Uses `args=` (full command line), not `comm=` (basename, truncated to
-/// 15 chars): the wrapper hint (`AGENT_MONITOR_AGENT=` on the command)
+/// 15 chars): the wrapper hint (`TMUX_AGENT_MONITOR_AGENT=` on the command)
 /// is only recoverable from the full line. The executable basename is
 /// derived from the first whitespace-separated token; the whole line is
 /// kept for hint parsing.
@@ -126,7 +126,7 @@ fn distance(pid: u32, root: u32, all: &HashMap<u32, Proc>) -> Option<usize> {
 /// The executable is the first whitespace-separated token; only its exact
 /// basename counts (`not-codex` never matches). Wrapper hint: when that
 /// executable is an opaque sandbox/VM wrapper (see `WRAPPERS`), and the
-/// same command line carries `AGENT_MONITOR_AGENT=<agent>`, the pane is
+/// same command line carries `TMUX_AGENT_MONITOR_AGENT=<agent>`, the pane is
 /// treated as that agent. The hint is per-command only — never read from
 /// the global environment — so exporting it globally cannot mislabel
 /// unrelated panes.
@@ -155,26 +155,35 @@ fn direct_provider(base: &str) -> Option<Provider> {
         _ => None,
     }
 }
-/// Extract `AGENT_MONITOR_AGENT=<agent>` from a wrapper command line.
-/// Only the `NAME=value` prefix form and `--env NAME=value` count;
-/// anything else (bare flags, positional args) is ignored.
+/// Extract a per-command wrapper hint; retain the legacy prefix alias.
+/// Only NAME=value and --env NAME=value count, never global environment.
 fn wrapper_hint(command: &str) -> Option<&str> {
-    const KEY: &str = "AGENT_MONITOR_AGENT=";
+    fn value(word: &str) -> Option<&str> {
+        ["TMUX_AGENT_MONITOR_AGENT=", "AGENT_MONITOR_AGENT="]
+            .iter()
+            .find_map(|key| word.strip_prefix(key))
+    }
     let mut words = command.split_whitespace();
     let mut expect_value = false;
     for word in words.by_ref() {
         if expect_value {
             expect_value = false;
-            if let Some(value) = word.strip_prefix(KEY) {
-                return Some(value);
+            if let Some(hint) = value(word) {
+                return Some(hint);
             }
         } else if word == "--env" {
             expect_value = true;
-        } else if let Some(value) = word.strip_prefix(KEY) {
-            return Some(value);
+        } else if let Some(hint) = value(word) {
+            return Some(hint);
         }
     }
     None
+}
+
+fn client_hint() -> Option<String> {
+    std::env::var("TMUX_AGENT_MONITOR_TMUX_CLIENT")
+        .ok()
+        .or_else(|| std::env::var("AGENT_MONITOR_TMUX_CLIENT").ok())
 }
 
 /// Which tmux servers to query: explicit config first, otherwise the
@@ -433,7 +442,7 @@ pub fn focus(identity: &PaneIdentity, config: &TmuxConfig) -> Result<()> {
         &identity.socket,
         &["list-clients", "-F", "#{client_tty}\t#{client_session}"],
     )?;
-    let hint = std::env::var("AGENT_MONITOR_TMUX_CLIENT").ok();
+    let hint = client_hint();
     let client = requesting_client(&clients, session.trim(), hint.as_deref())?;
     tmux(
         &identity.socket,
@@ -538,7 +547,7 @@ fn resume_command_with(
             Some(requesting_client(
                 &run(&["list-clients", "-F", "#{client_tty}\t#{client_session}"])?,
                 session.trim(),
-                std::env::var("AGENT_MONITOR_TMUX_CLIENT").ok().as_deref(),
+                client_hint().as_deref(),
             )?)
         } else {
             None
@@ -642,7 +651,7 @@ fn requesting_client(text: &str, session: &str, hint: Option<&str>) -> Result<St
     } else {
         ensure!(
             candidates.len() == 1,
-            "requesting tmux client is ambiguous; set AGENT_MONITOR_TMUX_CLIENT to its client_tty"
+            "requesting tmux client is ambiguous; set TMUX_AGENT_MONITOR_TMUX_CLIENT to its client_tty"
         );
         Ok(candidates[0].to_string())
     }
@@ -830,7 +839,15 @@ else: sys.exit(1)
         assert_eq!(provider("zsh"), None);
         // Truncated-basename lookalikes from comm= must not match.
         assert_eq!(provider("pi-coding-age"), None);
-        // Opaque wrappers: only a per-command AGENT_MONITOR_AGENT hint counts.
+        // Opaque wrappers: only per-command hints (including legacy aliases).
+        assert_eq!(
+            provider("TMUX_AGENT_MONITOR_AGENT=claude fence -- claude"),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            provider("ssh --env TMUX_AGENT_MONITOR_AGENT=codex host"),
+            Some(Provider::Codex)
+        );
         assert_eq!(provider("fence -- claude"), None);
         assert_eq!(
             provider("AGENT_MONITOR_AGENT=claude fence -- claude"),

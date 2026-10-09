@@ -16,7 +16,7 @@ import termios
 import time
 from pathlib import Path
 
-binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/release/agent-monitor').resolve()
+binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/release/tmux-agent-monitor').resolve()
 with tempfile.TemporaryDirectory(prefix='am-latency-') as tmp:
     root = Path(tmp)
     source = root / 'sessions'
@@ -39,10 +39,11 @@ with tempfile.TemporaryDirectory(prefix='am-latency-') as tmp:
             entry=dict(type='message',id=f'entry-{i}',parentId='name' if i==0 else f'entry-{i-1}',timestamp=large_stamp,
                        message=dict(role='user',content='Synthetic text. '*60))
             file.write(json.dumps(entry)+'\n')
-    env = dict(os.environ, PI_CODING_AGENT_SESSION_DIR=str(source),
+    env = dict(os.environ, HOME=str(root / 'home'), PI_CODING_AGENT_SESSION_DIR=str(source),
                PI_CODING_AGENT_DIR=str(root / 'pi'), TMUX_TMPDIR=str(root / 'no-tmux'),
-               TERM='xterm-256color', NO_COLOR='1')
-    for key in ('TMUX', 'TMUX_PANE', 'AGENT_MONITOR_HOME'):
+               CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
+               XDG_DATA_HOME=str(root / 'data'), TERM='xterm-256color', NO_COLOR='1')
+    for key in ('TMUX', 'TMUX_PANE', 'TMUX_AGENT_MONITOR_HOME', 'AGENT_MONITOR_HOME'):
         env.pop(key, None)
     start = time.monotonic()
     subprocess.run([str(binary), '--data-dir', str(state), 'sync'], env=env, capture_output=True, check=True, timeout=120)
@@ -77,14 +78,23 @@ with tempfile.TemporaryDirectory(prefix='am-latency-') as tmp:
         return data
 
     try:
-        # A named row confirms the cached catalog was drawn, not just raw-mode entry.
+        # Startup is Open; this fixture has no live panes. Measure the initial
+        # frame separately, then explicitly select All before testing rows.
         until = start + 3
         output = b''
-        while b'Session' not in output and time.monotonic() < until:
+        while b'All projects' not in output and time.monotonic() < until:
             output += drain(0.02)
-        cached = (time.monotonic() - start) * 1000
+        startup = (time.monotonic() - start) * 1000
+        assert b'All projects' in output and startup < 500
+        print(f'First startup frame: {startup:.1f} ms')
+        selected = time.monotonic()
+        os.write(master, b'fj\r')
+        output = b''
+        while b'Session' not in output and time.monotonic() - selected < 3:
+            output += drain(0.02)
+        cached = (time.monotonic() - selected) * 1000
         assert b'Session' in output
-        print(f'First cached named row: {cached:.1f} ms')
+        print(f'First cached named row after selecting All: {cached:.1f} ms')
         assert cached < 500
         drain(0.4)
         times = []

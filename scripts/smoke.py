@@ -6,6 +6,7 @@ import json
 import os
 import pty
 import select
+import shutil
 import struct
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import termios
 import time
 from pathlib import Path
 
-binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/agent-monitor').resolve()
+binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/tmux-agent-monitor').resolve()
 with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
     root = Path(tmp)
     source = root / 'pi-sessions'
@@ -24,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
                PI_CODING_AGENT_DIR=str(root / 'pi'), TMUX_TMPDIR=str(root / 'no-tmux'),
                CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                XDG_DATA_HOME=str(root / 'data'), TERM='xterm-256color', NO_COLOR='1')
-    for key in ('TMUX', 'TMUX_PANE', 'AGENT_MONITOR_HOME'):
+    for key in ('TMUX', 'TMUX_PANE', 'TMUX_AGENT_MONITOR_HOME', 'AGENT_MONITOR_HOME'):
         env.pop(key, None)
 
     def cli(*args):
@@ -41,6 +42,8 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
         path.write_text(''.join(json.dumps(e) + '\n' for e in entries))
 
     session(source / 'old.jsonl', 'old-native', 'Historic onboarding', '2026-01-01T00:00:00Z')
+    assert cli('--version').stdout.startswith('tmux-agent-monitor ')
+    assert 'Usage: tmux-agent-monitor' in cli('--help').stdout
     rows = json.loads(cli('sessions', '--all', '--json').stdout)
     assert len(rows) == 1 and rows[0]['state'] == 'history'
     assert json.loads(cli('sessions', '--json').stdout) == []
@@ -55,6 +58,24 @@ with tempfile.TemporaryDirectory(prefix='am-sessions-') as tmp:
     assert json.loads(cli('sessions', '--json').stdout) == []
     cli('undo', identity)
     assert json.loads(cli('sessions', '--json').stdout)[0]['note'] == 'Persistent next step'
+    # Rename fallback preserves existing decisions and notes without migrating data.
+    legacy_state = Path(env['HOME']) / '.local/state/agent-monitor'
+    shutil.copytree(state, legacy_state)
+    def default_cli(*args, overrides=None):
+        return subprocess.run([str(binary), *args], env=dict(env, **(overrides or {})), capture_output=True, text=True, check=True, timeout=15)
+    default_cli('done', identity)
+    legacy_rows = json.loads(default_cli('sessions', '--all', '--json').stdout)
+    kept = next(r for r in legacy_rows if r['id'] == identity)
+    assert kept['state'] == 'done' and kept['note'] == 'Persistent next step'
+    assert not (Path(env['HOME']) / '.local/state/tmux-agent-monitor').exists()
+    assert json.loads(cli('sessions', '--json').stdout)[0]['state'] == 'resume'
+    for key in ('TMUX_AGENT_MONITOR_HOME', 'AGENT_MONITOR_HOME'):
+        selected = root / ('selected-' + key.lower())
+        default_cli('sync', overrides={key: str(selected)})
+        assert (selected / 'sessions.db').exists()
+    canonical, ignored = root / 'preferred-canonical', root / 'ignored-legacy'
+    default_cli('sync', overrides={'TMUX_AGENT_MONITOR_HOME': str(canonical), 'AGENT_MONITOR_HOME': str(ignored)})
+    assert (canonical / 'sessions.db').exists() and not ignored.exists()
     # Launching a provider requires explicit consent; no consent, no spawn.
     denied = subprocess.run([str(binary), '--data-dir', str(state), 'open', identity],
                             env=env, capture_output=True, text=True, timeout=15)
@@ -242,7 +263,7 @@ else: raise AssertionError('non-read-only command: ' + repr(args))
         process.wait(timeout=3)
         assert process.returncode == 0
         assert time.monotonic() - start < 1
-        print('PASS: four-provider sessions, details, Open startup, project folding/flat/sorting, categorized menu, live-state diagnostics, notes, undo, PTY resize and quit')
+        print('PASS: four-provider sessions, details, Open startup, project folding/flat/sorting, categorized menu, live-state diagnostics, rename compatibility, notes, undo, PTY resize and quit')
     finally:
         if process.poll() is None:
             process.kill()

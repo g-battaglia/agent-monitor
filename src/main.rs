@@ -4,26 +4,26 @@
 //! requires a real terminal. Every other subcommand runs headlessly and
 //! prints text or JSON. Starting an agent always needs explicit confirmation
 //! (`--resume` in scripts); verified/probable openings block duplicates.
-use agent_monitor::{
-    model::{ResumeState, View, project_name},
-    paths, presence,
-    service::Service,
-    ui,
-};
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use std::{
     io::{self, IsTerminal, Write},
     path::PathBuf,
 };
+use tmux_agent_monitor::{
+    model::{ResumeState, View, project_name},
+    paths, presence,
+    service::Service,
+    ui,
+};
 
 #[derive(Parser)]
 #[command(
     version,
-    about = "Independent tmux monitor for Claude Code, Codex, OpenCode, and Pi"
+    about = "tmux-native agent monitor for Claude Code, Codex, OpenCode, and Pi"
 )]
 struct Cli {
-    #[arg(long, global = true, env = "AGENT_MONITOR_HOME")]
+    #[arg(long, global = true, env = "TMUX_AGENT_MONITOR_HOME")]
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -145,7 +145,7 @@ enum PiIntegration {
 }
 fn main() {
     if let Err(e) = run(Cli::parse()) {
-        eprintln!("agent-monitor: {}", paths::line(&format!("{e:#}")));
+        eprintln!("tmux-agent-monitor: {}", paths::line(&format!("{e:#}")));
         std::process::exit(1);
     }
 }
@@ -293,7 +293,7 @@ fn run(cli: Cli) -> Result<()> {
                     .catalog
                     .unbound
                     .iter()
-                    .filter(|p| p.provider == Some(agent_monitor::model::Provider::Pi))
+                    .filter(|p| p.provider == Some(tmux_agent_monitor::model::Provider::Pi))
                     .count();
                 if pi_panes > 0 {
                     println!(
@@ -312,7 +312,7 @@ fn run(cli: Cli) -> Result<()> {
             let conversation = if s.available {
                 service.detail(&s.id, leaf, tools)?
             } else {
-                agent_monitor::model::Conversation {
+                tmux_agent_monitor::model::Conversation {
                     warning: "Conversation unavailable; name and notes kept".into(),
                     ..Default::default()
                 }
@@ -345,10 +345,13 @@ fn run(cli: Cli) -> Result<()> {
             service.sync()?;
             let catalog = service.catalog()?;
             let details = if let Some(id) = id {
-                agent_monitor::details::Details::session(&catalog, service.resolve(&catalog, &id)?)
+                tmux_agent_monitor::details::Details::session(
+                    &catalog,
+                    service.resolve(&catalog, &id)?,
+                )
             } else {
                 let project = resolve_project(&catalog, project)?;
-                agent_monitor::details::Details::project(&catalog, project.as_deref())
+                tmux_agent_monitor::details::Details::project(&catalog, project.as_deref())
             };
             if json {
                 print_json(&details)
@@ -428,7 +431,7 @@ fn explain(
     watch: bool,
     samples: Option<u16>,
 ) -> Result<()> {
-    use agent_monitor::{activity, model::Provider};
+    use tmux_agent_monitor::{activity, model::Provider};
     if let Some(path) = file {
         let agent = agent
             .as_deref()
@@ -468,7 +471,8 @@ fn explain(
     let mut identity = None;
     let mut sample: u64 = 0;
     loop {
-        let panes = agent_monitor::tmux::discover(&agent_monitor::tmux::TmuxConfig::default())?;
+        let panes =
+            tmux_agent_monitor::tmux::discover(&tmux_agent_monitor::tmux::TmuxConfig::default())?;
         let mut candidates: Vec<_> = panes
             .into_iter()
             .filter(|p| p.provider.is_some())
@@ -501,11 +505,11 @@ fn explain(
             identity = Some(key.clone());
         }
         let (state, mut evidence, signature) =
-            match agent_monitor::tmux::capture_pane(&pane.socket, &pane.pane, 80) {
+            match tmux_agent_monitor::tmux::capture_pane(&pane.socket, &pane.pane, 80) {
                 Ok(raw) => {
                     let tail = paths::clean(&raw);
-                    let signature =
-                        (!tail.trim().is_empty()).then(|| agent_monitor::pi::hash(tail.as_bytes()));
+                    let signature = (!tail.trim().is_empty())
+                        .then(|| tmux_agent_monitor::pi::hash(tail.as_bytes()));
                     let (s, e) = activity::classify(provider, &pane.title, &tail);
                     (s, e, signature)
                 }
@@ -565,7 +569,7 @@ fn explain(
     Ok(())
 }
 fn resolve_project(
-    catalog: &agent_monitor::model::Catalog,
+    catalog: &tmux_agent_monitor::model::Catalog,
     project: Option<String>,
 ) -> Result<Option<String>> {
     let Some(project) = project else {
@@ -586,7 +590,7 @@ fn resolve_project(
             p == &project
                 || p == &canonical
                 || project_name(p) == project
-                || agent_monitor::model::project_label(p).eq_ignore_ascii_case(&project)
+                || tmux_agent_monitor::model::project_label(p).eq_ignore_ascii_case(&project)
         })
         .collect::<Vec<_>>();
     ensure!(
@@ -602,36 +606,22 @@ mod tests {
     #[test]
     fn agent_watch_arguments_are_bounded_and_snapshot_mode_is_exclusive() {
         for args in [
-            vec!["agent-monitor", "agent", "explain", "--samples", "3"],
-            vec![
-                "agent-monitor",
-                "agent",
-                "explain",
-                "--watch",
-                "--samples",
-                "0",
-            ],
-            vec![
-                "agent-monitor",
-                "agent",
-                "explain",
-                "--watch",
-                "--samples",
-                "1001",
-            ],
-            vec![
-                "agent-monitor",
-                "agent",
-                "explain",
-                "--watch",
-                "--file",
-                "screen.txt",
-            ],
+            vec!["--samples", "3"],
+            vec!["--watch", "--samples", "0"],
+            vec!["--watch", "--samples", "1001"],
+            vec!["--watch", "--file", "screen.txt"],
         ] {
-            assert!(Cli::try_parse_from(args).is_err());
+            assert!(
+                Cli::try_parse_from(
+                    ["tmux-agent-monitor", "agent", "explain"]
+                        .into_iter()
+                        .chain(args)
+                )
+                .is_err()
+            );
         }
         let cli = Cli::try_parse_from([
-            "agent-monitor",
+            "tmux-agent-monitor",
             "agent",
             "explain",
             "%1",

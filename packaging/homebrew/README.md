@@ -1,35 +1,30 @@
-# Homebrew tap
+# Homebrew packaging
 
-Formula source for `g-battaglia/homebrew-agent-monitor`.
-The formula builds `main` with the locked Rust dependencies. It is HEAD-only
-until a tagged release and a checksummed source archive are published.
-No services, Pi extensions, or agent clients are installed.
-
-Install from the [public tap](https://github.com/g-battaglia/homebrew-agent-monitor):
+Canonical formula and compatibility alias for
+[`g-battaglia/homebrew-tmux-agent-monitor`](https://github.com/g-battaglia/homebrew-tmux-agent-monitor).
+The HEAD-only formula builds upstream `main` with locked Rust dependencies.
+It installs tmux, but no services, agent clients, or Pi extensions.
 
 ```sh
-brew tap g-battaglia/agent-monitor
-brew install --HEAD g-battaglia/agent-monitor/agent-monitor
-agent-monitor
+brew tap g-battaglia/tmux-agent-monitor
+brew install --HEAD g-battaglia/tmux-agent-monitor/tmux-agent-monitor
+tmux-agent-monitor
+brew upgrade --fetch-HEAD g-battaglia/tmux-agent-monitor/tmux-agent-monitor
 ```
 
-Upgrade a development install with:
+## Maintenance
+
+Keep `Formula/tmux-agent-monitor.rb` and `Aliases/agent-monitor` synchronized
+with the public tap. The alias targets the canonical formula; it does not
+install a second or legacy-named binary. Old GitHub repository URLs redirect
+to the renamed repositories. Local checkout/tap directories can retain their
+old names without changing the formula.
 
 ```sh
-brew upgrade --fetch-HEAD g-battaglia/agent-monitor/agent-monitor
+ruby -c Formula/tmux-agent-monitor.rb
+brew style g-battaglia/tmux-agent-monitor/tmux-agent-monitor
+brew audit --strict g-battaglia/tmux-agent-monitor/tmux-agent-monitor
 ```
 
-## Maintainer checks
-
-Copy `Formula/agent-monitor.rb` to the tap repository's `Formula/` directory.
-Keep the tap repository free of CI workflows and user-specific paths.
-
-```sh
-ruby -c Formula/agent-monitor.rb
-brew style g-battaglia/agent-monitor/agent-monitor
-brew audit --strict g-battaglia/agent-monitor/agent-monitor
-```
-
-A local tap can be checked before publication. A source build from GitHub,
-however, only includes committed and pushed application changes; it cannot
-include an uncommitted working tree.
+No CI workflows or user-specific paths belong in the tap. A HEAD build uses
+committed upstream source, not an uncommitted local working tree.

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,15 +134,26 @@ fn parse(raw: &str) -> Result<Manifest, String> {
     }
     Ok(manifest)
 }
+fn override_path(home: &Path, name: &str) -> PathBuf {
+    let dir = home.join(".config/tmux-agent-monitor/agent-detection");
+    let primary = dir.join(format!("{name}.toml"));
+    if std::fs::symlink_metadata(&primary).is_ok()
+        || std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink())
+    {
+        primary
+    } else {
+        home.join(".config/agent-monitor/agent-detection")
+            .join(format!("{name}.toml"))
+    }
+}
 fn load(provider: Provider, injected: Option<&str>) -> (Manifest, String, String) {
     let (default, name) = bundled(provider);
     let raw = injected.map(str::to_owned).or_else(|| {
         let home = std::env::var_os("HOME").map(PathBuf::from)?;
-        let dir = home.join(".config/agent-monitor/agent-detection");
-        if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        let path = override_path(&home, name);
+        if std::fs::symlink_metadata(path.parent()?).is_ok_and(|m| m.file_type().is_symlink()) {
             return None;
         }
-        let path = dir.join(format!("{name}.toml"));
         let meta = std::fs::symlink_metadata(&path).ok()?;
         if !meta.is_file() || meta.file_type().is_symlink() {
             return None;
@@ -510,6 +521,22 @@ bottom_lines = 3
         assert_eq!(s, AgentActivity::Working);
         assert_eq!(e.manifest_source, "bundled");
         assert!(!e.warning.is_empty());
+    }
+    #[test]
+    fn renamed_overrides_take_precedence_without_losing_legacy_rules() {
+        let home = tempfile::tempdir().unwrap();
+        let old = home
+            .path()
+            .join(".config/agent-monitor/agent-detection/pi.toml");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, PI).unwrap();
+        assert_eq!(override_path(home.path(), "pi"), old);
+        let new = home
+            .path()
+            .join(".config/tmux-agent-monitor/agent-detection/pi.toml");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::write(&new, PI).unwrap();
+        assert_eq!(override_path(home.path(), "pi"), new);
     }
     #[test]
     fn bundled_manifests_all_parse() {
